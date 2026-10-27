@@ -1,6 +1,8 @@
 package com.pingpong.app
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.net.Uri
@@ -47,18 +49,25 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 
-val SportNavyBg = Color(0xFF141824)
-val SportCardNavy = Color(0xFF1E2438)
-val SportOrange = Color(0xFFFF5722)
-val SportRedAccent = Color(0xFFE53935)
-val TextPrimary = Color(0xFFFFFFFF)
-val TextSecondary = Color(0xFF90A4AE)
-val BorderDark = Color(0xFF2C354E)
+// ----------------- 多套高级运动主题 -----------------
+enum class AppTheme(val label: String, val bg: Color, val card: Color, val primary: Color, val textSec: Color) {
+    NAVY_ORANGE("活力深海橙", Color(0xFF141824), Color(0xFF1E2438), Color(0xFFFF5722), Color(0xFF90A4AE)),
+    CHINA_RED("经典国乒红", Color(0xFF191214), Color(0xFF281C20), Color(0xFFE53935), Color(0xFFAFA0A4)),
+    CYBER_GREEN("极客荧光绿", Color(0xFF121A16), Color(0xFF1B2822), Color(0xFF00E676), Color(0xFF90A69B)),
+    MINIMAL_WHITE("极简雪白风", Color(0xFF161616), Color(0xFF242424), Color(0xFFECEFF1), Color(0xFF9E9E9E))
+}
 
-data class Comment(val author: String, val text: String, val timeDesc: String = "刚刚")
+data class Comment(
+    val id: Long = System.currentTimeMillis(),
+    val author: String,
+    val text: String,
+    val imageUri: Uri? = null,
+    val timeDesc: String = "刚刚"
+)
 
 data class UserProfile(
     var name: String = "国狂直板",
@@ -86,53 +95,37 @@ data class Post(
     val timeDesc: String = "刚刚",
     var likes: Int = 0,
     var isLiked: Boolean = false,
-    val comments: MutableList<Comment> = mutableListOf()
+    val comments: MutableList<Comment> = mutableStateListOf()
 )
+
+data class Participant(val name: String, val phone: String, val score: String, val blade: String)
 
 data class Tournament(
     val id: Int,
-    val title: String,
-    val project: String,
-    val matchType: String,
-    val startTime: String,
-    val location: String,
-    val deadline: String,
-    val maxParticipants: String,
-    val restriction: String,
-    val fee: String,
-    val contact: String,
-    val contactImageUri: Uri? = null,
-    val detailText: String = "",
-    val detailImageUri: Uri? = null,
+    var title: String,
+    var project: String,
+    var matchType: String,
+    var startTime: String,
+    var location: String,
+    var deadline: String,
+    var maxParticipants: Int = 32,
+    var restriction: String,
+    var fee: String,
+    var contact: String,
+    var contactImageUri: Uri? = null,
+    var detailText: String = "",
+    var detailImageUri: Uri? = null,
+    var scheduleText: String = "【小组赛】每组4人前2名出线\n【淘汰赛】首轮16进8 -> 半决赛 -> 决赛",
     val isCreatedByMe: Boolean = false,
-    var isJoined: Boolean = false
+    var isJoined: Boolean = false,
+    val participants: MutableList<Participant> = mutableStateListOf()
 )
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    background = SportNavyBg,
-                    surface = SportCardNavy,
-                    primary = SportOrange,
-                    onBackground = TextPrimary,
-                    onSurface = TextPrimary
-                )
-            ) {
-                MainApp()
-            }
-        }
-    }
-}
-
-// ----------------- 本地永久存储引擎 -----------------
-object DataStorage {
-    private const val PREF_NAME = "pingpong_db"
-
+// 本地存储管理
+object LocalStorage {
+    private const val PREF = "pingpong_local_db"
     fun saveTournaments(context: Context, list: List<Tournament>) {
-        val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val sp = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         val arr = JSONArray()
         list.forEach { t ->
             val obj = JSONObject()
@@ -150,6 +143,7 @@ object DataStorage {
             obj.put("contactImageUri", t.contactImageUri?.toString() ?: "")
             obj.put("detailText", t.detailText)
             obj.put("detailImageUri", t.detailImageUri?.toString() ?: "")
+            obj.put("scheduleText", t.scheduleText)
             obj.put("isCreatedByMe", t.isCreatedByMe)
             obj.put("isJoined", t.isJoined)
             arr.put(obj)
@@ -158,36 +152,40 @@ object DataStorage {
     }
 
     fun loadTournaments(context: Context): List<Tournament> {
-        val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        val jsonStr = sp.getString("tournaments", null) ?: return listOf(
+        val sp = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        val s = sp.getString("tournaments", null) ?: return listOf(
             Tournament(
-                1, "光谷乒协周末业余挑战赛", "单打", "淘汰加小组赛", "2026-11-08", "光谷青年体育馆",
-                "2026-11-06", "32人", "限 1600 分以下", "30元/人", "老李 13800000000",
-                null, "前四名提供红双喜专业套胶！进馆必须穿球鞋。", null, isCreatedByMe = false, isJoined = false
+                1, "光谷乒协周末积分大奖赛", "单打", "淘汰加小组赛", "2026-11-08", "光谷青年体育馆",
+                "2026-11-06", 32, "限 1600 分以下", "30元/人", "老李 13800000000",
+                null, "进馆必须穿着牛筋底球鞋，红双喜三星球统一用球！", null,
+                "【第1轮】9:00 A组/B组循环\n【淘汰轮】14:00 胜者组排位", false, false,
+                mutableStateListOf(Participant("旋风直拍", "138****1122", "1680", "马琳软碳"), Participant("李爽", "139****8899", "1450", "张继科 ALC"))
             )
         )
         val list = mutableListOf<Tournament>()
-        val arr = JSONArray(jsonStr)
+        val arr = JSONArray(s)
         for (i in 0 until arr.length()) {
-            val obj = arr.getJSONObject(i)
+            val o = arr.getJSONObject(i)
             list.add(
                 Tournament(
-                    id = obj.optInt("id"),
-                    title = obj.optString("title"),
-                    project = obj.optString("project"),
-                    matchType = obj.optString("matchType"),
-                    startTime = obj.optString("startTime"),
-                    location = obj.optString("location"),
-                    deadline = obj.optString("deadline"),
-                    maxParticipants = obj.optString("maxParticipants"),
-                    restriction = obj.optString("restriction"),
-                    fee = obj.optString("fee"),
-                    contact = obj.optString("contact"),
-                    contactImageUri = if (obj.optString("contactImageUri").isNotEmpty()) Uri.parse(obj.optString("contactImageUri")) else null,
-                    detailText = obj.optString("detailText"),
-                    detailImageUri = if (obj.optString("detailImageUri").isNotEmpty()) Uri.parse(obj.optString("detailImageUri")) else null,
-                    isCreatedByMe = obj.optBoolean("isCreatedByMe"),
-                    isJoined = obj.optBoolean("isJoined")
+                    id = o.optInt("id"),
+                    title = o.optString("title"),
+                    project = o.optString("project"),
+                    matchType = o.optString("matchType"),
+                    startTime = o.optString("startTime"),
+                    location = o.optString("location"),
+                    deadline = o.optString("deadline"),
+                    maxParticipants = o.optInt("maxParticipants", 32),
+                    restriction = o.optString("restriction"),
+                    fee = o.optString("fee"),
+                    contact = o.optString("contact"),
+                    contactImageUri = if (o.optString("contactImageUri").isNotEmpty()) Uri.parse(o.optString("contactImageUri")) else null,
+                    detailText = o.optString("detailText"),
+                    detailImageUri = if (o.optString("detailImageUri").isNotEmpty()) Uri.parse(o.optString("detailImageUri")) else null,
+                    scheduleText = o.optString("scheduleText"),
+                    isCreatedByMe = o.optBoolean("isCreatedByMe"),
+                    isJoined = o.optBoolean("isJoined"),
+                    participants = mutableStateListOf(Participant("球友老王", "135****0000", "1500", "纯木五夹"))
                 )
             )
         }
@@ -195,8 +193,28 @@ object DataStorage {
     }
 }
 
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            var currentTheme by remember { mutableStateOf(AppTheme.NAVY_ORANGE) }
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    background = currentTheme.bg,
+                    surface = currentTheme.card,
+                    primary = currentTheme.primary,
+                    onBackground = Color.White,
+                    onSurface = Color.White
+                )
+            ) {
+                MainApp(currentTheme = currentTheme, onThemeChange = { currentTheme = it })
+            }
+        }
+    }
+}
+
 @Composable
-fun MainApp() {
+fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
     val context = LocalContext.current
     var currentTab by remember { mutableStateOf(0) }
     var isSearchActive by remember { mutableStateOf(false) }
@@ -205,94 +223,124 @@ fun MainApp() {
     var isEditingProfile by remember { mutableStateOf(false) }
     var isOpeningKaiqiuWeb by remember { mutableStateOf(false) }
     var isScoreboardOpen by remember { mutableStateOf(false) }
+    var externalWebUrl by remember { mutableStateOf<String?>(null) }
 
-    // 详情页导航状态
     var activePostDetail by remember { mutableStateOf<Post?>(null) }
     var activeTournamentDetail by remember { mutableStateOf<Tournament?>(null) }
+    var editingTournamentSchedule by remember { mutableStateOf<Tournament?>(null) }
 
     var userProfile by remember { mutableStateOf(UserProfile()) }
     var tournamentDraft by remember { mutableStateOf<Tournament?>(null) }
 
     val posts = remember {
         mutableStateListOf(
-            Post(1, "旋风直拍", "1680", "马琳软碳", "直拍横打打磨了虎口位置，反手起下旋通透很多，欢迎交流打磨细节！", "光谷体育馆", "器材晒单", null, true, "1小时前", 8, false, mutableListOf(Comment("球友大刘", "打磨角度很标准，握着不磨手了吧！"))),
-            Post(2, "李爽", "1450", "张继科 ALC", "坐标洪山体育中心，周六上午求横拍练对拉，AA台费！", "洪山体育馆", "约球搭子", null, true, "10分钟前", 3, false, mutableListOf(Comment("反手防弧", "加我一个，我也在洪山！")))
+            Post(1, "旋风直拍", "1680", "马琳软碳", "直拍横打打磨了手柄虎口位置，发力通透很多，欢迎交流打磨细节！", "光谷体育馆", "器材晒单", null, true, "1小时前", 8, false,
+                mutableStateListOf(Comment(1, "反手防弧", "打磨得很平顺，求教砂纸用多少目的？"))),
+            Post(2, "李爽", "1450", "张继科 ALC", "坐标洪山体育馆羽乒中心，周六上午求横拍练两面对拉，AA台费！", "洪山体育馆", "约球搭子", null, true, "10分钟前", 3, false,
+                mutableStateListOf(Comment(2, "狂飙拉手", "周六上午9点可以，我带球！")))
         )
     }
 
     val tournaments = remember {
         mutableStateListOf<Tournament>().apply {
-            addAll(DataStorage.loadTournaments(context))
+            addAll(LocalStorage.loadTournaments(context))
         }
     }
 
     AnimatedContent(
         targetState = when {
-            isScoreboardOpen -> 7
+            isScoreboardOpen -> 8
+            externalWebUrl != null -> 7
             isOpeningKaiqiuWeb -> 6
-            activeTournamentDetail != null -> 5
-            activePostDetail != null -> 4
+            editingTournamentSchedule != null -> 5
+            activeTournamentDetail != null -> 4
+            activePostDetail != null -> 3
             isSearchActive -> 1
             isCreatingPost -> 2
-            isCreatingTournament -> 3
+            isCreatingTournament -> 9
             else -> 0
         },
         transitionSpec = { fadeIn(spring()) togetherWith fadeOut(spring()) },
-        label = "AppScreenNav"
+        label = "MainScreenNav"
     ) { screen ->
         when (screen) {
-            // 7: 横屏专业记分牌 (支持改选手名字)
-            7 -> {
+            8 -> {
                 BackHandler { isScoreboardOpen = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-                ScoreboardScreen(onClose = { isScoreboardOpen = false })
+                ScoreboardScreen(theme = currentTheme, onClose = { isScoreboardOpen = false })
             }
-            // 6: 开球网内置网页
+            7 -> {
+                BackHandler { externalWebUrl = null }
+                LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+                CommonWebViewScreen(url = externalWebUrl ?: "", theme = currentTheme, onBack = { externalWebUrl = null })
+            }
             6 -> {
                 BackHandler { isOpeningKaiqiuWeb = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                KaiqiuWebScreen(onBack = { isOpeningKaiqiuWeb = false })
+                KaiqiuWebScreen(theme = currentTheme, onBack = { isOpeningKaiqiuWeb = false })
             }
-            // 5: 赛事详情页
             5 -> {
+                BackHandler { editingTournamentSchedule = null }
+                LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+                editingTournamentSchedule?.let { tour ->
+                    EditScheduleScreen(
+                        tournament = tour,
+                        theme = currentTheme,
+                        onBack = { editingTournamentSchedule = null },
+                        onSaved = { updatedText ->
+                            tour.scheduleText = updatedText
+                            LocalStorage.saveTournaments(context, tournaments)
+                            editingTournamentSchedule = null
+                            Toast.makeText(context, "赛程已实时更新！", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+            }
+            4 -> {
                 BackHandler { activeTournamentDetail = null }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 activeTournamentDetail?.let { tour ->
                     TournamentDetailScreen(
                         tournament = tour,
+                        theme = currentTheme,
+                        userProfile = userProfile,
                         onBack = { activeTournamentDetail = null },
                         onJoinSuccess = {
                             tour.isJoined = true
-                            DataStorage.saveTournaments(context, tournaments)
-                            Toast.makeText(context, "报名成功！已归档到「我参加的赛事」", Toast.LENGTH_SHORT).show()
+                            tour.participants.add(Participant(userProfile.name, "138****0000", userProfile.kaiqiuScore, userProfile.blade))
+                            LocalStorage.saveTournaments(context, tournaments)
+                            Toast.makeText(context, "报名成功！名额已锁定", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
             }
-            // 4: 贴吧风帖子详情页
-            4 -> {
+            3 -> {
                 BackHandler { activePostDetail = null }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 activePostDetail?.let { post ->
                     PostDetailScreen(
                         post = post,
                         userProfile = userProfile,
+                        theme = currentTheme,
                         onBack = { activePostDetail = null }
                     )
                 }
             }
-            // 1: 搜索
             1 -> {
                 BackHandler { isSearchActive = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                SearchFullScreen(onCancel = { isSearchActive = false })
+                SearchFullScreen(
+                    theme = currentTheme,
+                    onCancel = { isSearchActive = false },
+                    onOpenVideo = { url -> externalWebUrl = url }
+                )
             }
-            // 2: 朋友圈发帖
             2 -> {
                 BackHandler { isCreatingPost = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 CreatePostFullScreen(
                     userProfile = userProfile,
+                    theme = currentTheme,
                     onCancel = { isCreatingPost = false },
                     onPublish = { newPost ->
                         posts.add(0, newPost)
@@ -301,12 +349,12 @@ fun MainApp() {
                     }
                 )
             }
-            // 3: 自建比赛
-            3 -> {
+            9 -> {
                 BackHandler { isCreatingTournament = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 CreateTournamentFullScreen(
                     savedDraft = tournamentDraft,
+                    theme = currentTheme,
                     onCancel = { isCreatingTournament = false },
                     onSaveDraft = { draft ->
                         tournamentDraft = draft
@@ -315,18 +363,17 @@ fun MainApp() {
                     },
                     onPublish = { newTour ->
                         tournaments.add(0, newTour)
-                        DataStorage.saveTournaments(context, tournaments)
+                        LocalStorage.saveTournaments(context, tournaments)
                         tournamentDraft = null
                         isCreatingTournament = false
-                        Toast.makeText(context, "比赛发布成功！退出重进也不会丢！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "比赛发布成功！", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
-            // 0: 主界面
             else -> {
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 Scaffold(
-                    containerColor = SportNavyBg,
+                    containerColor = currentTheme.bg,
                     bottomBar = {
                         NavigationBar(containerColor = Color(0xFF0E121B), tonalElevation = 8.dp) {
                             NavigationBarItem(
@@ -334,21 +381,21 @@ fun MainApp() {
                                 onClick = { currentTab = 0 },
                                 icon = { Icon(Icons.Default.Home, contentDescription = "天地") },
                                 label = { Text("天地") },
-                                colors = navItemColors()
+                                colors = navColors(currentTheme)
                             )
                             NavigationBarItem(
                                 selected = currentTab == 1,
                                 onClick = { currentTab = 1 },
                                 icon = { Icon(Icons.Default.EmojiEvents, contentDescription = "赛事") },
                                 label = { Text("赛事") },
-                                colors = navItemColors()
+                                colors = navColors(currentTheme)
                             )
                             NavigationBarItem(
                                 selected = currentTab == 2,
                                 onClick = { currentTab = 2 },
                                 icon = { Icon(Icons.Default.Person, contentDescription = "我的") },
                                 label = { Text("我的") },
-                                colors = navItemColors()
+                                colors = navColors(currentTheme)
                             )
                         }
                     },
@@ -356,7 +403,7 @@ fun MainApp() {
                         if (currentTab == 0) {
                             FloatingActionButton(
                                 onClick = { isCreatingPost = true },
-                                containerColor = SportOrange,
+                                containerColor = currentTheme.primary,
                                 contentColor = Color.White,
                                 shape = CircleShape
                             ) {
@@ -365,7 +412,7 @@ fun MainApp() {
                         } else if (currentTab == 1) {
                             FloatingActionButton(
                                 onClick = { isCreatingTournament = true },
-                                containerColor = SportOrange,
+                                containerColor = currentTheme.primary,
                                 contentColor = Color.White,
                                 shape = CircleShape
                             ) {
@@ -378,20 +425,24 @@ fun MainApp() {
                         when (currentTab) {
                             0 -> CommunityScreen(
                                 posts = posts,
+                                theme = currentTheme,
                                 onSearchClick = { isSearchActive = true },
                                 onPostClick = { clickedPost -> activePostDetail = clickedPost }
                             )
                             1 -> TournamentScreen(
                                 tournaments = tournaments,
+                                theme = currentTheme,
                                 onOpenKaiqiu = { isOpeningKaiqiuWeb = true },
                                 onTournamentClick = { clickedTour -> activeTournamentDetail = clickedTour }
                             )
                             2 -> ProfileScreen(
                                 profile = userProfile,
                                 tournaments = tournaments,
+                                theme = currentTheme,
                                 onEditClick = { isEditingProfile = true },
                                 onOpenScoreboard = { isScoreboardOpen = true },
-                                onTournamentClick = { clickedTour -> activeTournamentDetail = clickedTour }
+                                onTournamentClick = { clickedTour -> activeTournamentDetail = clickedTour },
+                                onEditSchedule = { myTour -> editingTournamentSchedule = myTour }
                             )
                         }
                     }
@@ -399,6 +450,8 @@ fun MainApp() {
                     if (isEditingProfile) {
                         EditProfileDialog(
                             current = userProfile,
+                            currentTheme = currentTheme,
+                            onThemeSelected = onThemeChange,
                             onDismiss = { isEditingProfile = false },
                             onSave = { updated ->
                                 userProfile = updated
@@ -414,12 +467,12 @@ fun MainApp() {
 }
 
 @Composable
-fun navItemColors() = NavigationBarItemDefaults.colors(
-    selectedIconColor = SportOrange,
-    selectedTextColor = SportOrange,
-    indicatorColor = SportOrange.copy(alpha = 0.2f),
-    unselectedIconColor = TextSecondary,
-    unselectedTextColor = TextSecondary
+fun navColors(theme: AppTheme) = NavigationBarItemDefaults.colors(
+    selectedIconColor = theme.primary,
+    selectedTextColor = theme.primary,
+    indicatorColor = theme.primary.copy(alpha = 0.2f),
+    unselectedIconColor = theme.textSec,
+    unselectedTextColor = theme.textSec
 )
 
 @Composable
@@ -435,81 +488,68 @@ fun LockScreenOrientation(orientation: Int) {
     }
 }
 
-// -------------------------------------------------------------
-// 一、 贴吧风帖子详情页 (简洁纯粹、楼层评论、底部回帖栏)
-// -------------------------------------------------------------
+// ----------------- 1. 帖子详情页 (回复即时显示 + 支持带图评论) -----------------
 @Composable
 fun PostDetailScreen(
     post: Post,
     userProfile: UserProfile,
+    theme: AppTheme,
     onBack: () -> Unit
 ) {
     var replyText by remember { mutableStateOf("") }
+    var replyImageUri by remember { mutableStateOf<Uri?>(null) }
     var isLiked by remember { mutableStateOf(post.isLiked) }
     var likesCount by remember { mutableStateOf(post.likes) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SportNavyBg)
-    ) {
-        // 顶部导航
+    val commentPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        replyImageUri = uri
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(SportCardNavy)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().background(theme.card).padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = TextPrimary)
+                Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
             }
             Spacer(modifier = Modifier.width(12.dp))
-            Text("帖子详情", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text("帖子详情与讨论", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         }
 
-        // 帖子内容与评论楼层流
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 16.dp)
+            modifier = Modifier.weight(1f).padding(horizontal = 16.dp)
         ) {
             item {
                 Spacer(modifier = Modifier.height(14.dp))
-                // 楼主信息
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(SportOrange.copy(alpha = 0.3f)),
+                        modifier = Modifier.size(44.dp).clip(CircleShape).background(theme.primary.copy(alpha = 0.3f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(text = post.author.take(1), color = SportOrange, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text(text = post.author.take(1), color = theme.primary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = post.author, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(text = post.author, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(shape = RoundedCornerShape(3.dp), color = SportOrange.copy(alpha = 0.2f)) {
-                                Text("楼主", color = SportOrange, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                            Surface(shape = RoundedCornerShape(3.dp), color = theme.primary.copy(alpha = 0.2f)) {
+                                Text("楼主", color = theme.primary, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
                             }
                         }
-                        Text(text = "${post.timeDesc} · 武器: ${post.blade}", color = TextSecondary, fontSize = 12.sp)
+                        Text(text = "${post.timeDesc} · 武器: ${post.blade}", color = theme.textSec, fontSize = 12.sp)
                     }
                     if (post.showScore && post.score != "无") {
-                        Surface(shape = RoundedCornerShape(6.dp), color = SportRedAccent.copy(alpha = 0.25f)) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFE53935).copy(alpha = 0.25f)) {
                             Text(text = "积分: ${post.score}", color = Color(0xFFFF8A80), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                // 帖子正文
-                Text(text = post.content, color = TextPrimary, fontSize = 16.sp, lineHeight = 24.sp)
+                Text(text = post.content, color = Color.White, fontSize = 16.sp, lineHeight = 24.sp)
 
-                // 帖子附图
                 if (post.imageUri != null) {
                     Spacer(modifier = Modifier.height(12.dp))
                     AsyncImage(
@@ -523,22 +563,18 @@ fun PostDetailScreen(
                 if (post.location.isNotBlank()) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Place, contentDescription = null, tint = SportOrange, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Place, contentDescription = null, tint = theme.primary, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = post.location, color = SportOrange, fontSize = 12.sp)
+                        Text(text = post.location, color = theme.primary, fontSize = 12.sp)
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                Divider(color = BorderDark, thickness = 0.5.dp)
+                Divider(color = Color(0xFF2C354E), thickness = 0.5.dp)
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("全部回复 (${post.comments.size})", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("全部回复 (${post.comments.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.clickable {
@@ -551,21 +587,20 @@ fun PostDetailScreen(
                         Icon(
                             if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = null,
-                            tint = if (isLiked) SportOrange else TextSecondary,
+                            tint = if (isLiked) theme.primary else theme.textSec,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (likesCount > 0) "$likesCount" else "点赞", color = if (isLiked) SportOrange else TextSecondary, fontSize = 13.sp)
+                        Text(if (likesCount > 0) "$likesCount" else "点赞", color = if (isLiked) theme.primary else theme.textSec, fontSize = 13.sp)
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // 楼层评论列表
             if (post.comments.isEmpty()) {
                 item {
-                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp), contentAlignment = Alignment.Center) {
-                        Text("暂无回复，快来抢沙发！", color = TextSecondary.copy(alpha = 0.5f), fontSize = 13.sp)
+                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 36.dp), contentAlignment = Alignment.Center) {
+                        Text("暂无回复，抢个沙发吧！", color = theme.textSec.copy(alpha = 0.5f), fontSize = 13.sp)
                     }
                 }
             } else {
@@ -573,93 +608,160 @@ fun PostDetailScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                            .background(SportCardNavy, RoundedCornerShape(8.dp))
+                            .padding(vertical = 6.dp)
+                            .background(theme.card, RoundedCornerShape(8.dp))
                             .padding(12.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = c.author, color = SportOrange, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(text = c.author, color = theme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Spacer(modifier = Modifier.weight(1f))
-                            Text(text = c.timeDesc, color = TextSecondary, fontSize = 11.sp)
+                            Text(text = c.timeDesc, color = theme.textSec, fontSize = 11.sp)
                         }
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = c.text, color = TextPrimary, fontSize = 14.sp)
+                        Text(text = c.text, color = Color.White, fontSize = 14.sp)
+                        if (c.imageUri != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            AsyncImage(
+                                model = c.imageUri,
+                                contentDescription = null,
+                                modifier = Modifier.size(120.dp).clip(RoundedCornerShape(6.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // 底部回帖输入条
-        Surface(
-            color = SportCardNavy,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = replyText,
-                    onValueChange = { replyText = it },
-                    placeholder = { Text("回帖交流一下...", color = TextSecondary, fontSize = 13.sp) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        if (replyText.isNotBlank()) {
-                            post.comments.add(Comment(author = userProfile.name, text = replyText))
-                            replyText = ""
+        // 底部回帖栏 (支持带图评论)
+        Surface(color = theme.card, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                if (replyImageUri != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
+                        AsyncImage(
+                            model = replyImageUri,
+                            contentDescription = null,
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(4.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(onClick = { replyImageUri = null }) {
+                            Text("移除图片", color = Color(0xFFFF5252), fontSize = 12.sp)
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = SportOrange),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("发送", color = Color.White)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        commentPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = "插图", tint = theme.primary)
+                    }
+                    OutlinedTextField(
+                        value = replyText,
+                        onValueChange = { replyText = it },
+                        placeholder = { Text("回帖交流，支持发图...", color = theme.textSec, fontSize = 13.sp) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (replyText.isNotBlank() || replyImageUri != null) {
+                                post.comments.add(
+                                    Comment(
+                                        author = userProfile.name,
+                                        text = replyText.ifEmpty { "[分享图片]" },
+                                        imageUri = replyImageUri
+                                    )
+                                )
+                                replyText = ""
+                                replyImageUri = null
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) { Text("发送", color = Color.White) }
                 }
             }
         }
     }
 }
 
-// -------------------------------------------------------------
-// 二、 赛事详情全屏页 (完整规程展示 + 立即报名)
-// -------------------------------------------------------------
+// ----------------- 2. 赛事详情 (报名人数/参赛名单/赛程/分享链接) -----------------
 @Composable
 fun TournamentDetailScreen(
     tournament: Tournament,
+    theme: AppTheme,
+    userProfile: UserProfile,
     onBack: () -> Unit,
     onJoinSuccess: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(SportNavyBg)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(SportCardNavy)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = TextPrimary)
+    val context = LocalContext.current
+    var showParticipantsDialog by remember { mutableStateOf(false) }
+
+    // 参赛名单弹窗
+    if (showParticipantsDialog) {
+        AlertDialog(
+            onDismissRequest = { showParticipantsDialog = false },
+            containerColor = theme.card,
+            title = { Text("参赛球友名单 (${tournament.participants.size}人)", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (tournament.participants.isEmpty()) {
+                        item { Text("暂无报名人员，成为第一个报名的选手吧！", color = theme.textSec, fontSize = 13.sp) }
+                    } else {
+                        items(tournament.participants) { p ->
+                            Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF263238), modifier = Modifier.fillMaxWidth()) {
+                                Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Column {
+                                        Text(p.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        Text("底板: ${p.blade}", color = theme.textSec, fontSize = 11.sp)
+                                    }
+                                    Surface(shape = RoundedCornerShape(4.dp), color = theme.primary.copy(alpha = 0.2f)) {
+                                        Text("积分: ${p.score}", color = theme.primary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showParticipantsDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = theme.primary)) {
+                    Text("关闭", color = Color.White)
+                }
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            Text("赛事规程与详情", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().background(theme.card).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("比赛规程与赛程", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+            // 分享比赛按键
+            IconButton(onClick = {
+                val shareText = "【乒乓比赛邀请】${tournament.title}\n⏰时间：${tournament.startTime}\n📍地点：${tournament.location}\n参赛名额仅限${tournament.maxParticipants}人，快去「乒乓天地」APP报名对阵！\n赛事链接: https://pingpanghub.app/tour/${tournament.id}"
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("比赛邀请", shareText))
+                Toast.makeText(context, "比赛专属链接已生成并复制到剪贴板！", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Default.Share, contentDescription = "分享", tint = theme.primary)
+            }
         }
 
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)
         ) {
-            Surface(shape = RoundedCornerShape(4.dp), color = SportOrange) {
+            Surface(shape = RoundedCornerShape(4.dp), color = theme.primary) {
                 Text(
                     text = "${tournament.project} · ${tournament.matchType}",
                     color = Color.White,
@@ -669,49 +771,78 @@ fun TournamentDetailScreen(
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = tournament.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            Text(text = tournament.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
 
             Spacer(modifier = Modifier.height(14.dp))
-            Card(
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = SportCardNavy),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Card(shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = theme.card), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DetailRow(icon = Icons.Default.DateRange, label = "比赛时间", value = tournament.startTime)
-                    DetailRow(icon = Icons.Default.EventBusy, label = "截止时间", value = tournament.deadline)
-                    DetailRow(icon = Icons.Default.Place, label = "比赛地点", value = tournament.location)
-                    DetailRow(icon = Icons.Default.Group, label = "规模名额", value = tournament.maxParticipants)
-                    DetailRow(icon = Icons.Default.Rule, label = "参赛限制", value = tournament.restriction)
-                    DetailRow(icon = Icons.Default.AttachMoney, label = "报名费用", value = tournament.fee)
-                    DetailRow(icon = Icons.Default.Phone, label = "联系方式", value = tournament.contact)
+                    DetailRow(theme, Icons.Default.DateRange, "比赛时间", tournament.startTime)
+                    DetailRow(theme, Icons.Default.EventBusy, "截止时间", tournament.deadline)
+                    DetailRow(theme, Icons.Default.Place, "比赛地点", tournament.location)
+                    DetailRow(theme, Icons.Default.Rule, "参赛限制", tournament.restriction)
+                    DetailRow(theme, Icons.Default.AttachMoney, "报名费用", tournament.fee)
+                    DetailRow(theme, Icons.Default.Phone, "联系方式", tournament.contact)
                 }
             }
 
-            if (tournament.contactImageUri != null) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text("主办方联系二维码", color = TextSecondary, fontSize = 13.sp)
-                Spacer(modifier = Modifier.height(6.dp))
-                AsyncImage(
-                    model = tournament.contactImageUri,
-                    contentDescription = null,
-                    modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Crop
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 报名人数与名单入口卡片
+            Card(shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = theme.card), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("当前报名进度", color = theme.textSec, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${tournament.participants.size} / ${tournament.maxParticipants} 人 (已报满${(tournament.participants.size * 100) / tournament.maxParticipants}%)",
+                            color = theme.primary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Button(
+                        onClick = { showParticipantsDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary.copy(alpha = 0.2f))
+                    ) {
+                        Text("查看参赛名单", color = theme.primary, fontSize = 12.sp)
+                    }
+                }
+            }
+
+            // 实时赛程板块
+            Spacer(modifier = Modifier.height(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Timeline, contentDescription = null, tint = theme.primary, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("实时对阵与比赛赛程", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Surface(shape = RoundedCornerShape(8.dp), color = theme.card, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = tournament.scheduleText,
+                    color = Color(0xFFFFCC80),
+                    fontSize = 13.sp,
+                    lineHeight = 22.sp,
+                    modifier = Modifier.padding(14.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
-            Text("详细比赛规则与奖励说明", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("详细比赛规则与奖励说明", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = if (tournament.detailText.isNotBlank()) tournament.detailText else "本比赛执行中国乒乓球协会审定的最新《乒乓球竞赛规则》。请自带合格球拍，提前15分钟到场签到。",
-                color = TextSecondary,
-                fontSize = 14.sp,
-                lineHeight = 22.sp
+                color = theme.textSec,
+                fontSize = 13.sp,
+                lineHeight = 20.sp
             )
 
             if (tournament.detailImageUri != null) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 AsyncImage(
                     model = tournament.detailImageUri,
                     contentDescription = null,
@@ -722,35 +853,35 @@ fun TournamentDetailScreen(
             Spacer(modifier = Modifier.height(20.dp))
         }
 
-        // 底部固定操作栏
-        Surface(
-            color = SportCardNavy,
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        // 底部报名栏
+        val isFull = tournament.participants.size >= tournament.maxParticipants
+        Surface(color = theme.card, modifier = Modifier.fillMaxWidth()) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                OutlinedButton(
-                    onClick = onBack,
-                    modifier = Modifier.weight(1f).height(46.dp),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("返回列表", color = TextSecondary)
+                OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f).height(46.dp), shape = RoundedCornerShape(8.dp)) {
+                    Text("返回", color = theme.textSec)
                 }
                 Button(
                     onClick = onJoinSuccess,
-                    enabled = !tournament.isJoined,
+                    enabled = !tournament.isJoined && !isFull,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = SportOrange,
+                        containerColor = theme.primary,
                         disabledContainerColor = Color.Gray
                     ),
                     modifier = Modifier.weight(1.5f).height(46.dp),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text(if (tournament.isJoined) "已报名此赛事" else "立即报名参赛", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = when {
+                            tournament.isJoined -> "已成功报名此赛"
+                            isFull -> "名额已满员"
+                            else -> "立即报名参赛"
+                        },
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -758,21 +889,58 @@ fun TournamentDetailScreen(
 }
 
 @Composable
-fun DetailRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String) {
+fun DetailRow(theme: AppTheme, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = SportOrange, modifier = Modifier.size(16.dp))
+        Icon(icon, contentDescription = null, tint = theme.primary, modifier = Modifier.size(16.dp))
         Spacer(modifier = Modifier.width(8.dp))
-        Text(text = "$label: ", color = TextSecondary, fontSize = 13.sp)
-        Text(text = value, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(text = "$label: ", color = theme.textSec, fontSize = 13.sp)
+        Text(text = value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
-// -------------------------------------------------------------
-// 三、 赛事大厅页面 (点击进入赛事详情)
-// -------------------------------------------------------------
+// ----------------- 3. 主办方专属：编辑赛程与规程全屏页 -----------------
+@Composable
+fun EditScheduleScreen(
+    tournament: Tournament,
+    theme: AppTheme,
+    onBack: () -> Unit,
+    onSaved: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(tournament.scheduleText) }
+
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg).padding(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("取消", color = theme.textSec, fontSize = 15.sp, modifier = Modifier.clickable { onBack() })
+            Text("编辑实时赛程", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Button(
+                onClick = { onSaved(text) },
+                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                shape = RoundedCornerShape(8.dp)
+            ) { Text("保存更新", color = Color.White) }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("在此发布并实时修改对阵表、各台次比分和晋级名单：", color = theme.textSec, fontSize = 13.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            placeholder = { Text("例如：\n【1号台 10:00】A组第一 VS B组第二\n【2号台 10:00】C组第一 VS D组第二\n实时比分更新在此...", color = theme.textSec) },
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        )
+    }
+}
+
+// ----------------- 4. 赛事大厅 -----------------
 @Composable
 fun TournamentScreen(
     tournaments: List<Tournament>,
+    theme: AppTheme,
     onOpenKaiqiu: () -> Unit,
     onTournamentClick: (Tournament) -> Unit
 ) {
@@ -788,43 +956,46 @@ fun TournamentScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(42.dp).background(SportOrange, CircleShape), contentAlignment = Alignment.Center) {
+                    Box(modifier = Modifier.size(42.dp).background(theme.primary, CircleShape), contentAlignment = Alignment.Center) {
                         Icon(Icons.Default.Language, contentDescription = null, tint = Color.White)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
-                        Text("进入开球网 (官方赛事库)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        Text("查询权威比赛、赛事报名与积分明细", color = TextSecondary, fontSize = 12.sp)
+                        Text("进入开球网 (全国官方赛事库)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text("权威赛事报名与个人全国排位分", color = theme.textSec, fontSize = 12.sp)
                     }
                 }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = SportOrange)
+                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = theme.primary)
             }
         }
 
         Spacer(modifier = Modifier.height(18.dp))
-        Text("民间自建赛事大厅 (点击查看规程报名)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Text("城市民间赛事大厅 (点击查看规程赛程与名单)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         Spacer(modifier = Modifier.height(10.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(tournaments) { tour ->
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = SportCardNavy),
+                    colors = CardDefaults.cardColors(containerColor = theme.card),
                     modifier = Modifier.fillMaxWidth().clickable { onTournamentClick(tour) }
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(shape = RoundedCornerShape(4.dp), color = SportOrange) {
+                            Surface(shape = RoundedCornerShape(4.dp), color = theme.primary) {
                                 Text(tour.project, color = Color.White, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(text = tour.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(text = tour.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         }
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(text = "赛制: ${tour.matchType} | 限制: ${tour.restriction}", color = TextSecondary, fontSize = 12.sp)
-                        Text(text = "⏰ 时间: ${tour.startTime} (截止: ${tour.deadline})", color = TextSecondary, fontSize = 12.sp)
-                        Text(text = "📍 地点: ${tour.location}", color = TextSecondary, fontSize = 12.sp)
-                        Text(text = "💰 费用: ${tour.fee} | 规模: ${tour.maxParticipants}", color = Color(0xFFFFCC80), fontSize = 12.sp)
+                        Text(text = "赛制: ${tour.matchType} | 限制: ${tour.restriction}", color = theme.textSec, fontSize = 12.sp)
+                        Text(text = "⏰ 时间: ${tour.startTime} (截止: ${tour.deadline})", color = theme.textSec, fontSize = 12.sp)
+                        Text(text = "📍 地点: ${tour.location}", color = theme.textSec, fontSize = 12.sp)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(text = "💰 费用: ${tour.fee}", color = Color(0xFFFFCC80), fontSize = 12.sp)
+                            Text(text = "已报: ${tour.participants.size}/${tour.maxParticipants}人", color = theme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -833,12 +1004,11 @@ fun TournamentScreen(
     }
 }
 
-// -------------------------------------------------------------
-// 四、 首页天地 (点击帖子卡片进入详情)
-// -------------------------------------------------------------
+// ----------------- 5. 首页天地 -----------------
 @Composable
 fun CommunityScreen(
     posts: List<Post>,
+    theme: AppTheme,
     onSearchClick: () -> Unit,
     onPostClick: (Post) -> Unit
 ) {
@@ -847,16 +1017,15 @@ fun CommunityScreen(
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(modifier = Modifier.height(12.dp))
-
         Surface(
             modifier = Modifier.fillMaxWidth().height(44.dp).clickable { onSearchClick() },
             shape = RoundedCornerShape(22.dp),
-            color = SportCardNavy
+            color = theme.card
         ) {
             Row(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary)
+                Icon(Icons.Default.Search, contentDescription = null, tint = theme.textSec)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("搜器材、教学视频(B站/抖音)、球友...", color = TextSecondary, fontSize = 13.sp)
+                Text("搜器材评测、教学视频(B站/抖音直达)、球友...", color = theme.textSec, fontSize = 13.sp)
             }
         }
 
@@ -873,11 +1042,11 @@ fun CommunityScreen(
                         text = tabTitle,
                         fontSize = 14.sp,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) SportOrange else TextSecondary
+                        color = if (isSelected) theme.primary else theme.textSec
                     )
                     if (isSelected) {
                         Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.width(18.dp).height(3.dp).background(SportOrange, RoundedCornerShape(2.dp)))
+                        Box(modifier = Modifier.width(18.dp).height(3.dp).background(theme.primary, RoundedCornerShape(2.dp)))
                     }
                 }
             }
@@ -890,25 +1059,25 @@ fun CommunityScreen(
             items(filtered) { post ->
                 Card(
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = SportCardNavy),
+                    colors = CardDefaults.cardColors(containerColor = theme.card),
                     modifier = Modifier.fillMaxWidth().clickable { onPostClick(post) }
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                modifier = Modifier.size(38.dp).clip(CircleShape).background(SportOrange.copy(alpha = 0.3f)),
+                                modifier = Modifier.size(38.dp).clip(CircleShape).background(theme.primary.copy(alpha = 0.3f)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(text = post.author.take(1), color = SportOrange, fontWeight = FontWeight.Bold)
+                                Text(text = post.author.take(1), color = theme.primary, fontWeight = FontWeight.Bold)
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(text = post.author, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text(text = post.timeDesc, color = TextSecondary, fontSize = 11.sp)
+                                Text(text = post.author, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text(text = post.timeDesc, color = theme.textSec, fontSize = 11.sp)
                             }
 
                             if (post.showScore && post.score != "无") {
-                                Surface(shape = RoundedCornerShape(6.dp), color = SportRedAccent.copy(alpha = 0.25f)) {
+                                Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFE53935).copy(alpha = 0.25f)) {
                                     Text(text = "积分: ${post.score}", color = Color(0xFFFF8A80), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                                 }
                             }
@@ -916,11 +1085,11 @@ fun CommunityScreen(
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Surface(shape = RoundedCornerShape(4.dp), color = Color.White.copy(alpha = 0.08f)) {
-                            Text(text = "🏓 武器: ${post.blade}", color = TextSecondary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Text(text = "🏓 武器: ${post.blade}", color = theme.textSec, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(text = post.content, color = TextPrimary, fontSize = 14.sp)
+                        Text(text = post.content, color = Color.White, fontSize = 14.sp)
 
                         if (post.imageUri != null) {
                             Spacer(modifier = Modifier.height(8.dp))
@@ -934,8 +1103,8 @@ fun CommunityScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = "#${post.tag}", color = TextSecondary, fontSize = 11.sp)
-                            Text(text = "💬 ${post.comments.size} 回复 · ❤️ ${post.likes}", color = TextSecondary, fontSize = 12.sp)
+                            Text(text = "#${post.tag}", color = theme.textSec, fontSize = 11.sp)
+                            Text(text = "💬 ${post.comments.size} 回复 · ❤️ ${post.likes}", color = theme.textSec, fontSize = 12.sp)
                         }
                     }
                 }
@@ -945,23 +1114,21 @@ fun CommunityScreen(
     }
 }
 
-// -------------------------------------------------------------
-// 五、 “我的”页面 (增加：我参加的赛事 + 我创建的赛事)
-// -------------------------------------------------------------
+// ----------------- 6. “我的”页面 (我创建的赛事支持管理/编辑赛程) -----------------
 @Composable
 fun ProfileScreen(
     profile: UserProfile,
     tournaments: List<Tournament>,
+    theme: AppTheme,
     onEditClick: () -> Unit,
     onOpenScoreboard: () -> Unit,
-    onTournamentClick: (Tournament) -> Unit
+    onTournamentClick: (Tournament) -> Unit,
+    onEditSchedule: (Tournament) -> Unit
 ) {
     val myCreated = tournaments.filter { it.isCreatedByMe }
     val myJoined = tournaments.filter { it.isJoined }
 
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -976,78 +1143,74 @@ fun ProfileScreen(
                         contentScale = ContentScale.Crop
                     )
                 } else {
-                    Box(modifier = Modifier.size(56.dp).clip(CircleShape).background(SportOrange), contentAlignment = Alignment.Center) {
+                    Box(modifier = Modifier.size(56.dp).clip(CircleShape).background(theme.primary), contentAlignment = Alignment.Center) {
                         Text(profile.name.take(1), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
                     }
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Column {
-                    Text(profile.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("${profile.grip} · ${profile.hand} · ${profile.style}", color = TextSecondary, fontSize = 13.sp)
+                    Text(profile.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("${profile.grip} · ${profile.hand} · ${profile.style}", color = theme.textSec, fontSize = 13.sp)
                 }
             }
 
             IconButton(onClick = onEditClick) {
-                Icon(Icons.Default.Settings, contentDescription = "设置", tint = SportOrange)
+                Icon(Icons.Default.Settings, contentDescription = "设置", tint = theme.primary)
             }
         }
 
         Spacer(modifier = Modifier.height(18.dp))
-        Text("战力积分", color = TextSecondary, fontSize = 13.sp)
+        Text("战力积分", color = theme.textSec, fontSize = 13.sp)
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = SportCardNavy), modifier = Modifier.weight(1f)) {
+            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = theme.card), modifier = Modifier.weight(1f)) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("开球网积分", color = TextSecondary, fontSize = 12.sp)
-                    Text(profile.kaiqiuScore, color = SportOrange, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("开球网积分", color = theme.textSec, fontSize = 12.sp)
+                    Text(profile.kaiqiuScore, color = theme.primary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
             }
-            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = SportCardNavy), modifier = Modifier.weight(1f)) {
+            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = theme.card), modifier = Modifier.weight(1f)) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("爱聚网积分", color = TextSecondary, fontSize = 12.sp)
+                    Text("爱聚网积分", color = theme.textSec, fontSize = 12.sp)
                     Text(profile.aijuScore, color = Color(0xFF4FC3F7), fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
-        Text("我的当前装备", color = TextSecondary, fontSize = 13.sp)
+        Text("我的当前装备", color = theme.textSec, fontSize = 13.sp)
         Spacer(modifier = Modifier.height(6.dp))
-        Card(
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = SportCardNavy),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = theme.card), modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(14.dp)) {
-                Text("▫️ 底板：${profile.blade}", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text("▫️ 底板：${profile.blade}", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(6.dp))
-                Text("▫️ 正手胶皮：${profile.forehand}", color = TextPrimary, fontSize = 14.sp)
+                Text("▫️ 正手胶皮：${profile.forehand}", color = Color.White, fontSize = 14.sp)
                 Spacer(modifier = Modifier.height(6.dp))
-                Text("▫️ 反手胶皮：${profile.backhand}", color = TextPrimary, fontSize = 14.sp)
+                Text("▫️ 反手胶皮：${profile.backhand}", color = Color.White, fontSize = 14.sp)
             }
         }
 
-        // 新增板块 1：我参加的赛事
+        // 我参加的赛事
         Spacer(modifier = Modifier.height(20.dp))
-        Text("我参加的赛事 (${myJoined.size})", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text("我参加的赛事 (${myJoined.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(modifier = Modifier.height(8.dp))
         if (myJoined.isEmpty()) {
-            Surface(shape = RoundedCornerShape(8.dp), color = SportCardNavy, modifier = Modifier.fillMaxWidth()) {
-                Text("暂未报名比赛，去「赛事大厅」看看吧！", color = TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
+            Surface(shape = RoundedCornerShape(8.dp), color = theme.card, modifier = Modifier.fillMaxWidth()) {
+                Text("暂未报名比赛，去「赛事大厅」看看吧！", color = theme.textSec, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 myJoined.forEach { tour ->
                     Card(
                         shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(containerColor = SportCardNavy),
+                        colors = CardDefaults.cardColors(containerColor = theme.card),
                         modifier = Modifier.fillMaxWidth().clickable { onTournamentClick(tour) }
                     ) {
                         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
-                                Text(tour.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("时间: ${tour.startTime} | ${tour.location}", color = TextSecondary, fontSize = 11.sp)
+                                Text(tour.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("时间: ${tour.startTime} | ${tour.location}", color = theme.textSec, fontSize = 11.sp)
                             }
                             Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF2E7D32)) {
                                 Text("已报名", color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
@@ -1058,29 +1221,34 @@ fun ProfileScreen(
             }
         }
 
-        // 新增板块 2：我创建的赛事
+        // 我创建的赛事 (支持编辑赛程)
         Spacer(modifier = Modifier.height(20.dp))
-        Text("我创建的赛事 (${myCreated.size})", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text("我创建的赛事 (${myCreated.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(modifier = Modifier.height(8.dp))
         if (myCreated.isEmpty()) {
-            Surface(shape = RoundedCornerShape(8.dp), color = SportCardNavy, modifier = Modifier.fillMaxWidth()) {
-                Text("暂未发起比赛，在赛事页点加号即可创建！", color = TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
+            Surface(shape = RoundedCornerShape(8.dp), color = theme.card, modifier = Modifier.fillMaxWidth()) {
+                Text("暂未发起比赛，在赛事页点加号即可发起！", color = theme.textSec, fontSize = 12.sp, modifier = Modifier.padding(14.dp))
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 myCreated.forEach { tour ->
                     Card(
                         shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(containerColor = SportCardNavy),
-                        modifier = Modifier.fillMaxWidth().clickable { onTournamentClick(tour) }
+                        colors = CardDefaults.cardColors(containerColor = theme.card),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(tour.title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("时间: ${tour.startTime} | 规模: ${tour.maxParticipants}", color = TextSecondary, fontSize = 11.sp)
+                            Column(modifier = Modifier.weight(1f).clickable { onTournamentClick(tour) }) {
+                                Text(tour.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("已报: ${tour.participants.size}/${tour.maxParticipants}人 | 状态: 举办中", color = theme.textSec, fontSize = 11.sp)
                             }
-                            Surface(shape = RoundedCornerShape(4.dp), color = SportOrange) {
-                                Text("主办方", color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Button(
+                                onClick = { onEditSchedule(tour) },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("编辑赛程", color = Color.White, fontSize = 11.sp)
                             }
                         }
                     }
@@ -1090,24 +1258,16 @@ fun ProfileScreen(
 
         // 记分牌入口
         Spacer(modifier = Modifier.height(24.dp))
-        Card(
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF263238)),
-            modifier = Modifier.fillMaxWidth().clickable { onOpenScoreboard() }
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF263238)), modifier = Modifier.fillMaxWidth().clickable { onOpenScoreboard() }) {
+            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.size(40.dp).background(Color(0xFF00C853), CircleShape), contentAlignment = Alignment.Center) {
                         Icon(Icons.Default.Scoreboard, contentDescription = null, tint = Color.White)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
-                        Text("专业比赛记分牌 (11分制)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        Text("支持改选手名、2球换发/Deuce规则与局分", color = TextSecondary, fontSize = 12.sp)
+                        Text("专业比赛记分牌 (11分制)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text("横屏裁判台模式，支持随时点击改选手名字", color = theme.textSec, fontSize = 12.sp)
                     }
                 }
                 Icon(Icons.Default.ScreenRotation, contentDescription = null, tint = Color(0xFF00C853))
@@ -1117,11 +1277,143 @@ fun ProfileScreen(
     }
 }
 
-// -------------------------------------------------------------
-// 六、 横屏专业 11 分制记分牌 (支持点击修改选手名字)
-// -------------------------------------------------------------
+// ----------------- 7. 搜索直达真实 B站 / 抖音 视频 -----------------
 @Composable
-fun ScoreboardScreen(onClose: () -> Unit) {
+fun SearchFullScreen(
+    theme: AppTheme,
+    onCancel: () -> Unit,
+    onOpenVideo: (String) -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    var selectedTab by remember { mutableStateOf(1) } // 0: 本站, 1: B站, 2: 抖音
+    val resultTabs = listOf("本站讨论", "B站教学", "抖音实战")
+
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg).padding(horizontal = 16.dp)) {
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(20.dp), color = theme.card, modifier = Modifier.weight(1f).height(44.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = theme.textSec)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = { Text("搜技术、装备、打法...", color = theme.textSec, fontSize = 14.sp) },
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        singleLine = true
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Text("取消", color = theme.primary, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.clickable { onCancel() })
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+            resultTabs.forEachIndexed { index, title ->
+                val isSelected = selectedTab == index
+                Column(modifier = Modifier.clickable { selectedTab = index }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(text = title, color = if (isSelected) theme.primary else theme.textSec, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 15.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (isSelected) Box(modifier = Modifier.width(28.dp).height(3.dp).background(theme.primary, RoundedCornerShape(2.dp)))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        val currentQuery = query.ifEmpty { "乒乓球技术" }
+        val encoded = URLEncoder.encode(currentQuery, "UTF-8")
+        val bilibiliSearchUrl = "https://search.bilibili.com/all?keyword=$encoded"
+        val douyinSearchUrl = "https://www.douyin.com/search/$encoded"
+
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = theme.card),
+            modifier = Modifier.fillMaxWidth().clickable {
+                when (selectedTab) {
+                    1 -> onOpenVideo(bilibiliSearchUrl)
+                    2 -> onOpenVideo(douyinSearchUrl)
+                }
+            }
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (selectedTab == 1) Icons.Default.PlayCircle else Icons.Default.SmartDisplay,
+                        contentDescription = null,
+                        tint = theme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = when (selectedTab) {
+                            1 -> "在 B站 实时搜索关于 \"$currentQuery\" 的视频"
+                            2 -> "在 抖音 实时搜索关于 \"$currentQuery\" 的视频"
+                            else -> "站内球友发布的讨论"
+                        },
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = "点击立即通过内嵌播放页加载真实视频与评测", color = theme.textSec, fontSize = 12.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("热门乒乓搜索", color = theme.textSec, fontSize = 13.sp)
+        Spacer(modifier = Modifier.height(10.dp))
+        FlowRowLayout(listOf("反手拧拉要领", "狂飚3灌油", "张继科ALC配胶", "业余发球技巧", "长胶倒板教学")) { tag ->
+            query = tag
+        }
+    }
+}
+
+// ----------------- 8. 通用内嵌 WebView 页面 (支持B站、抖音、开球网站内直接看) -----------------
+@Composable
+fun CommonWebViewScreen(url: String, theme: AppTheme, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().background(theme.card).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Text("站内视频与资讯直达", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    webViewClient = WebViewClient()
+                    loadUrl(url)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun KaiqiuWebScreen(theme: AppTheme, onBack: () -> Unit) {
+    CommonWebViewScreen(url = "https://www.kaiqiu.cc", theme = theme, onBack = onBack)
+}
+
+// ----------------- 9. 横屏专业 11 分制记分牌 (支持点击改选手名) -----------------
+@Composable
+fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
     var playerAName by remember { mutableStateOf("选手 A") }
     var playerBName by remember { mutableStateOf("选手 B") }
     var scoreA by remember { mutableStateOf(0) }
@@ -1130,7 +1422,7 @@ fun ScoreboardScreen(onClose: () -> Unit) {
     var gameScoreB by remember { mutableStateOf(0) }
     var serverIsA by remember { mutableStateOf(true) }
 
-    var editingPlayer by remember { mutableStateOf<String?>(null) } // "A" or "B"
+    var editingPlayer by remember { mutableStateOf<String?>(null) }
     var tempEditName by remember { mutableStateOf("") }
 
     val history = remember { mutableStateListOf<Pair<Int, Int>>() }
@@ -1146,13 +1438,13 @@ fun ScoreboardScreen(onClose: () -> Unit) {
     if (editingPlayer != null) {
         AlertDialog(
             onDismissRequest = { editingPlayer = null },
-            containerColor = SportCardNavy,
-            title = { Text("修改选手姓名", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            containerColor = theme.card,
+            title = { Text("修改选手姓名", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = tempEditName,
                     onValueChange = { tempEditName = it },
-                    placeholder = { Text("输入选手名字（如马龙、张继科）", color = TextSecondary) },
+                    placeholder = { Text("输入选手名字（如马龙、张继科）", color = theme.textSec) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1165,18 +1457,16 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                         }
                         editingPlayer = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = SportOrange)
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
                 ) { Text("确定", color = Color.White) }
             },
             dismissButton = {
-                TextButton(onClick = { editingPlayer = null }) { Text("取消", color = TextSecondary) }
+                TextButton(onClick = { editingPlayer = null }) { Text("取消", color = theme.textSec) }
             }
         )
     }
 
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color(0xFF090D16)).padding(16.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF090D16)).padding(16.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1192,9 +1482,9 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                     val tempN = playerAName; playerAName = playerBName; playerBName = tempN
                     serverIsA = !serverIsA
                 }) {
-                    Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = SportOrange)
+                    Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = theme.primary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("换边", color = SportOrange)
+                    Text("换边", color = theme.primary)
                 }
                 TextButton(onClick = {
                     if (history.isNotEmpty()) {
@@ -1203,9 +1493,9 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                         scoreB = last.second
                     }
                 }, enabled = history.isNotEmpty()) {
-                    Icon(Icons.Default.Undo, contentDescription = null, tint = if (history.isNotEmpty()) TextPrimary else TextSecondary)
+                    Icon(Icons.Default.Undo, contentDescription = null, tint = if (history.isNotEmpty()) Color.White else theme.textSec)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("撤销", color = if (history.isNotEmpty()) TextPrimary else TextSecondary)
+                    Text("撤销", color = if (history.isNotEmpty()) Color.White else theme.textSec)
                 }
                 TextButton(onClick = {
                     scoreA = 0; scoreB = 0; gameScoreA = 0; gameScoreB = 0; history.clear()
@@ -1219,11 +1509,10 @@ fun ScoreboardScreen(onClose: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(top = 44.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 选手 A
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = if (currentServerIsA) Color(0xFF1B2838) else Color(0xFF141A29)),
-                border = if (currentServerIsA) androidx.compose.foundation.BorderStroke(2.dp, SportOrange) else null,
+                border = if (currentServerIsA) androidx.compose.foundation.BorderStroke(2.dp, theme.primary) else null,
                 modifier = Modifier.weight(1f).fillMaxHeight().clickable {
                     history.add(Pair(scoreA, scoreB))
                     scoreA++
@@ -1246,21 +1535,21 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                             editingPlayer = "A"
                         }
                     ) {
-                        Text(playerAName, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(playerAName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = TextSecondary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = theme.textSec, modifier = Modifier.size(14.dp))
                         if (currentServerIsA) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(shape = CircleShape, color = SportOrange) {
+                            Surface(shape = CircleShape, color = theme.primary) {
                                 Text("发球", color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                     }
-                    Text("局分: $gameScoreA", color = SportOrange, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("局分: $gameScoreA", color = theme.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     AnimatedContent(targetState = scoreA, label = "scoreA") { sc ->
                         Text(text = "$sc", color = Color.White, fontSize = 86.sp, fontWeight = FontWeight.Black)
                     }
-                    Text("点击 +1 分 (点击名字可修改)", color = TextSecondary.copy(alpha = 0.5f), fontSize = 11.sp)
+                    Text("点击 +1 分 (点击名字改名)", color = theme.textSec.copy(alpha = 0.5f), fontSize = 11.sp)
                 }
             }
 
@@ -1269,22 +1558,21 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("11分制", color = TextSecondary, fontSize = 13.sp)
+                Text("11分制", color = theme.textSec, fontSize = 13.sp)
                 Spacer(modifier = Modifier.height(6.dp))
                 if (isDeuce) {
                     Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFFF5252)) {
                         Text("DEUCE", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                     }
                 } else {
-                    Text("VS", color = SportOrange, fontWeight = FontWeight.Black, fontSize = 20.sp)
+                    Text("VS", color = theme.primary, fontWeight = FontWeight.Black, fontSize = 20.sp)
                 }
             }
 
-            // 选手 B
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = if (!currentServerIsA) Color(0xFF1B2838) else Color(0xFF141A29)),
-                border = if (!currentServerIsA) androidx.compose.foundation.BorderStroke(2.dp, SportOrange) else null,
+                border = if (!currentServerIsA) androidx.compose.foundation.BorderStroke(2.dp, theme.primary) else null,
                 modifier = Modifier.weight(1f).fillMaxHeight().clickable {
                     history.add(Pair(scoreA, scoreB))
                     scoreB++
@@ -1307,541 +1595,33 @@ fun ScoreboardScreen(onClose: () -> Unit) {
                             editingPlayer = "B"
                         }
                     ) {
-                        Text(playerBName, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(playerBName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = TextSecondary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = theme.textSec, modifier = Modifier.size(14.dp))
                         if (!currentServerIsA) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(shape = CircleShape, color = SportOrange) {
+                            Surface(shape = CircleShape, color = theme.primary) {
                                 Text("发球", color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                     }
-                    Text("局分: $gameScoreB", color = SportOrange, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("局分: $gameScoreB", color = theme.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     AnimatedContent(targetState = scoreB, label = "scoreB") { sc ->
                         Text(text = "$sc", color = Color.White, fontSize = 86.sp, fontWeight = FontWeight.Black)
                     }
-                    Text("点击 +1 分 (点击名字可修改)", color = TextSecondary.copy(alpha = 0.5f), fontSize = 11.sp)
+                    Text("点击 +1 分 (点击名字改名)", color = theme.textSec.copy(alpha = 0.5f), fontSize = 11.sp)
                 }
             }
         }
     }
 }
 
-// ----------------- 7. 自建比赛逻辑 -----------------
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CreateTournamentFullScreen(
-    savedDraft: Tournament?,
-    onCancel: () -> Unit,
-    onSaveDraft: (Tournament) -> Unit,
-    onPublish: (Tournament) -> Unit
-) {
-    val context = LocalContext.current
-    var title by remember { mutableStateOf(savedDraft?.title ?: "") }
-    var project by remember { mutableStateOf(savedDraft?.project ?: "单打") }
-    var matchType by remember { mutableStateOf(savedDraft?.matchType ?: "淘汰加小组赛") }
-    var startTime by remember { mutableStateOf(savedDraft?.startTime ?: "") }
-    var location by remember { mutableStateOf(savedDraft?.location ?: "") }
-    var deadline by remember { mutableStateOf(savedDraft?.deadline ?: "") }
-    var maxParticipants by remember { mutableStateOf(savedDraft?.maxParticipants ?: "") }
-    var restrictionType by remember { mutableStateOf("无限制") }
-    var restrictionValue by remember { mutableStateOf("") }
-    var fee by remember { mutableStateOf(savedDraft?.fee ?: "") }
-    var contact by remember { mutableStateOf(savedDraft?.contact ?: "") }
-    var contactImageUri by remember { mutableStateOf<Uri?>(savedDraft?.contactImageUri) }
-    var detailText by remember { mutableStateOf(savedDraft?.detailText ?: "") }
-    var detailImageUri by remember { mutableStateOf<Uri?>(savedDraft?.detailImageUri) }
-
-    var showDatePickerForStart by remember { mutableStateOf(false) }
-    var showDatePickerForDeadline by remember { mutableStateOf(false) }
-    var showNumberInputDialog by remember { mutableStateOf(false) }
-    var numberInputTitle by remember { mutableStateOf("") }
-    var onNumberInputConfirm by remember { mutableStateOf<(String) -> Unit>({}) }
-
-    val contactImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { contactImageUri = it }
-    val detailImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { detailImageUri = it }
-
-    val datePickerState = rememberDatePickerState()
-    if (showDatePickerForStart || showDatePickerForDeadline) {
-        DatePickerDialog(
-            onDismissRequest = {
-                showDatePickerForStart = false
-                showDatePickerForDeadline = false
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val ms = datePickerState.selectedDateMillis
-                    if (ms != null) {
-                        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                        val dStr = fmt.format(Date(ms))
-                        if (showDatePickerForStart) startTime = dStr else deadline = dStr
-                    }
-                    showDatePickerForStart = false
-                    showDatePickerForDeadline = false
-                }) { Text("确定", color = SportOrange) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDatePickerForStart = false
-                    showDatePickerForDeadline = false
-                }) { Text("取消", color = TextSecondary) }
-            }
-        ) { DatePicker(state = datePickerState) }
-    }
-
-    if (showNumberInputDialog) {
-        NumberOnlyInputDialog(
-            title = numberInputTitle,
-            onDismiss = { showNumberInputDialog = false },
-            onConfirm = {
-                onNumberInputConfirm(it)
-                showNumberInputDialog = false
-            }
-        )
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize().background(SportNavyBg).verticalScroll(rememberScrollState()).padding(16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("取消", color = TextSecondary, fontSize = 15.sp, modifier = Modifier.clickable { onCancel() })
-            Text("发起乒乓比赛", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            Spacer(modifier = Modifier.width(30.dp))
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        TournamentInputItem(label = "赛事名称", value = title, hint = "例如：光谷乒协大奖赛") { title = it }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("比赛项目", color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("单打", "双打", "混双", "团体").forEach { p ->
-                FilterChip(selected = project == p, onClick = { project = p }, label = { Text(p) })
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("赛事类型", color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("淘汰赛", "淘汰加小组赛", "大循环").forEach { m ->
-                FilterChip(selected = matchType == m, onClick = { matchType = m }, label = { Text(m) })
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        ClickableDateItem(label = "比赛开始时间", dateValue = startTime, hint = "点击打开日历选择日期") { showDatePickerForStart = true }
-        TournamentInputItem(label = "比赛地点", value = location, hint = "例如：洪山体育中心羽乒馆3楼") { location = it }
-        ClickableDateItem(label = "报名截止时间", dateValue = deadline, hint = "点击打开日历选择日期") { showDatePickerForDeadline = true }
-        TournamentInputItem(label = "参赛人数", value = maxParticipants, hint = "例如：32人 / 16队") { maxParticipants = it }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("参赛限制", color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = restrictionType == "无限制",
-                onClick = { restrictionType = "无限制"; restrictionValue = "" },
-                label = { Text("无限制") }
-            )
-            FilterChip(
-                selected = restrictionType == "分数限制",
-                onClick = {
-                    numberInputTitle = "输入分数限制（例如1600）"
-                    onNumberInputConfirm = { num ->
-                        restrictionType = "分数限制"
-                        restrictionValue = "限 $num 分以下"
-                    }
-                    showNumberInputDialog = true
-                },
-                label = { Text(if (restrictionType == "分数限制" && restrictionValue.isNotEmpty()) restrictionValue else "分数限制") }
-            )
-            FilterChip(
-                selected = restrictionType == "年龄限制",
-                onClick = {
-                    numberInputTitle = "输入年龄门槛（例如45）"
-                    onNumberInputConfirm = { num ->
-                        restrictionType = "年龄限制"
-                        restrictionValue = "限 $num 岁以上"
-                    }
-                    showNumberInputDialog = true
-                },
-                label = { Text(if (restrictionType == "年龄限制" && restrictionValue.isNotEmpty()) restrictionValue else "年龄限制") }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        ClickableDateItem(label = "报名费", dateValue = fee, hint = "点击输入金额(仅数字) 或 免费") {
-            numberInputTitle = "输入报名费金额(元，输0为免费)"
-            onNumberInputConfirm = { num ->
-                fee = if (num == "0" || num.isEmpty()) "免费" else "${num}元/人"
-            }
-            showNumberInputDialog = true
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        TournamentInputItem(label = "联系方式", value = contact, hint = "微信号或手机号") { contact = it }
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(
-                onClick = { contactImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                colors = ButtonDefaults.buttonColors(containerColor = SportCardNavy)
-            ) {
-                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = SportOrange)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(if (contactImageUri == null) "添加联系微信二维码图" else "已选二维码(点击更换)", color = TextPrimary, fontSize = 12.sp)
-            }
-            if (contactImageUri != null) {
-                Spacer(modifier = Modifier.width(10.dp))
-                AsyncImage(model = contactImageUri, contentDescription = null, modifier = Modifier.size(36.dp).clip(RoundedCornerShape(4.dp)))
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("赛事详情页 (规程/奖励详情)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = detailText,
-            onValueChange = { detailText = it },
-            placeholder = { Text("在此输入更详细的奖励规则、分组说明...", color = TextSecondary, fontSize = 13.sp) },
-            modifier = Modifier.fillMaxWidth().height(90.dp)
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(
-                onClick = { detailImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                colors = ButtonDefaults.buttonColors(containerColor = SportCardNavy)
-            ) {
-                Icon(Icons.Default.Image, contentDescription = null, tint = SportOrange)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(if (detailImageUri == null) "添加详情海报/奖品实拍图" else "已添加详情图(点击更换)", color = TextPrimary, fontSize = 12.sp)
-            }
-            if (detailImageUri != null) {
-                Spacer(modifier = Modifier.width(10.dp))
-                AsyncImage(model = detailImageUri, contentDescription = null, modifier = Modifier.size(36.dp).clip(RoundedCornerShape(4.dp)))
-            }
-        }
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(
-                onClick = {
-                    val draft = Tournament(
-                        id = (1000..9999).random(),
-                        title = title.ifEmpty { "未命名草稿" },
-                        project = project,
-                        matchType = matchType,
-                        startTime = startTime,
-                        location = location,
-                        deadline = deadline,
-                        maxParticipants = maxParticipants,
-                        restriction = if (restrictionType == "无限制") "无限制" else restrictionValue,
-                        fee = fee,
-                        contact = contact,
-                        contactImageUri = contactImageUri,
-                        detailText = detailText,
-                        detailImageUri = detailImageUri,
-                        isCreatedByMe = true
-                    )
-                    onSaveDraft(draft)
-                },
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, SportOrange)
-            ) { Text("保存草稿", color = SportOrange) }
-
-            Button(
-                onClick = {
-                    if (title.isBlank()) {
-                        Toast.makeText(context, "请至少填写赛事名称！", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val newTour = Tournament(
-                            id = (1000..9999).random(),
-                            title = title,
-                            project = project,
-                            matchType = matchType,
-                            startTime = startTime.ifEmpty { "待定" },
-                            location = location.ifEmpty { "同城球馆" },
-                            deadline = deadline.ifEmpty { "赛前" },
-                            maxParticipants = maxParticipants.ifEmpty { "不限" },
-                            restriction = if (restrictionType == "无限制") "无限制" else restrictionValue.ifEmpty { "有条件限制" },
-                            fee = fee.ifEmpty { "免费" },
-                            contact = contact.ifEmpty { "站内联系" },
-                            contactImageUri = contactImageUri,
-                            detailText = detailText,
-                            detailImageUri = detailImageUri,
-                            isCreatedByMe = true
-                        )
-                        onPublish(newTour)
-                    }
-                },
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SportOrange)
-            ) { Text("发布比赛", color = Color.White, fontWeight = FontWeight.Bold) }
-        }
-        Spacer(modifier = Modifier.height(40.dp))
-    }
-}
-
-@Composable
-fun TournamentInputItem(label: String, value: String, hint: String, onValueChange: (String) -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(text = label, color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(4.dp))
-        Surface(shape = RoundedCornerShape(8.dp), color = SportCardNavy, modifier = Modifier.fillMaxWidth().height(44.dp)) {
-            TextField(
-                value = value,
-                onValueChange = onValueChange,
-                placeholder = { Text(hint, color = TextSecondary.copy(alpha = 0.6f), fontSize = 13.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
-                ),
-                singleLine = true
-            )
-        }
-    }
-}
-
-@Composable
-fun ClickableDateItem(label: String, dateValue: String, hint: String, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(text = label, color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(4.dp))
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = SportCardNavy,
-            modifier = Modifier.fillMaxWidth().height(44.dp).clickable { onClick() }
-        ) {
-            Row(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = if (dateValue.isEmpty()) hint else dateValue,
-                    color = if (dateValue.isEmpty()) TextSecondary.copy(alpha = 0.6f) else TextPrimary,
-                    fontSize = 13.sp
-                )
-                Icon(Icons.Default.DateRange, contentDescription = null, tint = SportOrange, modifier = Modifier.size(18.dp))
-            }
-        }
-    }
-}
-
-@Composable
-fun NumberOnlyInputDialog(title: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var input by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = SportCardNavy,
-        title = { Text(title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { str -> if (str.all { it.isDigit() }) input = str },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                placeholder = { Text("在此输入纯数字", color = TextSecondary) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(input) }, colors = ButtonDefaults.buttonColors(containerColor = SportOrange)) {
-                Text("确定", color = Color.White)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = TextSecondary) }
-        }
-    )
-}
-
-// ----------------- 8. 朋友圈发帖 -----------------
-@Composable
-fun CreatePostFullScreen(
-    userProfile: UserProfile,
-    onCancel: () -> Unit,
-    onPublish: (Post) -> Unit
-) {
-    var content by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedTag by remember { mutableStateOf("约球搭子") }
-    var showMyScore by remember { mutableStateOf(true) }
-
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> selectedImageUri = uri }
-
-    Column(modifier = Modifier.fillMaxSize().background(SportNavyBg).padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("取消", color = TextSecondary, fontSize = 16.sp, modifier = Modifier.clickable { onCancel() })
-            Button(
-                onClick = {
-                    if (content.isNotBlank() || selectedImageUri != null) {
-                        onPublish(
-                            Post(
-                                id = (100..9999).random(),
-                                author = userProfile.name,
-                                score = userProfile.kaiqiuScore,
-                                blade = userProfile.blade,
-                                content = content,
-                                location = location,
-                                tag = selectedTag,
-                                imageUri = selectedImageUri,
-                                showScore = showMyScore
-                            )
-                        )
-                    }
-                },
-                enabled = content.isNotBlank() || selectedImageUri != null,
-                colors = ButtonDefaults.buttonColors(containerColor = SportOrange),
-                shape = RoundedCornerShape(18.dp)
-            ) { Text("发布", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp) }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        TextField(
-            value = content,
-            onValueChange = { content = it },
-            placeholder = { Text("这一刻的想法，或是约球安排...", color = TextSecondary, fontSize = 15.sp) },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            ),
-            modifier = Modifier.fillMaxWidth().height(130.dp)
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (selectedImageUri == null) {
-                Box(
-                    modifier = Modifier
-                        .size(80.dp)
-                        .background(SportCardNavy, RoundedCornerShape(8.dp))
-                        .border(1.dp, BorderDark, RoundedCornerShape(8.dp))
-                        .clickable { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(28.dp))
-                        Text("照片", color = TextSecondary, fontSize = 11.sp)
-                    }
-                }
-            } else {
-                Box(modifier = Modifier.size(80.dp)) {
-                    AsyncImage(
-                        model = selectedImageUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                    IconButton(
-                        onClick = { selectedImageUri = null },
-                        modifier = Modifier.align(Alignment.TopEnd).size(22.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-        Divider(color = BorderDark, thickness = 0.5.dp)
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Place, contentDescription = null, tint = SportOrange, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.width(10.dp))
-            TextField(
-                value = location,
-                onValueChange = { location = it },
-                placeholder = { Text("添加所在位置 (选填)", color = TextSecondary, fontSize = 14.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
-                ),
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Divider(color = BorderDark, thickness = 0.5.dp)
-
-        Spacer(modifier = Modifier.height(14.dp))
-        Text("选择发布板块", color = TextSecondary, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            listOf("约球搭子", "器材晒单", "日常交流").forEach { t ->
-                val isSelected = selectedTag == t
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isSelected) SportOrange else SportCardNavy,
-                    modifier = Modifier.clickable { selectedTag = t }
-                ) {
-                    Text(
-                        text = t,
-                        color = if (isSelected) Color.White else TextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-        Divider(color = BorderDark, thickness = 0.5.dp)
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("展示我的积分", color = TextPrimary, fontSize = 14.sp)
-                Text("在帖子角标显示开球网/爱聚网积分", color = TextSecondary, fontSize = 11.sp)
-            }
-            Switch(
-                checked = showMyScore,
-                onCheckedChange = { showMyScore = it },
-                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = SportOrange)
-            )
-        }
-    }
-}
-
-// ----------------- 9. 资料编辑 -----------------
+// ----------------- 10. 设置弹窗 (包含 4 套主题换色) -----------------
 @Composable
 fun EditProfileDialog(
     current: UserProfile,
+    currentTheme: AppTheme,
+    onThemeSelected: (AppTheme) -> Unit,
     onDismiss: () -> Unit,
     onSave: (UserProfile) -> Unit
 ) {
@@ -1862,18 +1642,39 @@ fun EditProfileDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = SportCardNavy,
-        title = { Text("修改个人资料与装备概况", color = TextPrimary, fontWeight = FontWeight.Bold) },
+        containerColor = currentTheme.card,
+        title = { Text("个人资料与偏好设置", color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                Text("软件配色主题切换", color = currentTheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppTheme.values().forEach { th ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (th == currentTheme) th.primary else Color(0xFF2E3852),
+                            modifier = Modifier.clickable { onThemeSelected(th) }
+                        ) {
+                            Text(
+                                text = th.label,
+                                color = if (th == currentTheme) Color.Black else Color.White,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Divider(color = Color(0xFF2C354E), thickness = 0.5.dp)
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (avatarUri != null) {
                         AsyncImage(model = avatarUri, contentDescription = null, modifier = Modifier.size(50.dp).clip(CircleShape), contentScale = ContentScale.Crop)
                     } else {
-                        Box(modifier = Modifier.size(50.dp).background(SportOrange, CircleShape), contentAlignment = Alignment.Center) {
+                        Box(modifier = Modifier.size(50.dp).background(currentTheme.primary, CircleShape), contentAlignment = Alignment.Center) {
                             Text(name.take(1), color = Color.White)
                         }
                     }
@@ -1881,7 +1682,7 @@ fun EditProfileDialog(
                     Button(
                         onClick = { avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E3852))
-                    ) { Text("从相册选择头像照片", fontSize = 12.sp) }
+                    ) { Text("从相册换头像", fontSize = 12.sp) }
                 }
 
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("球友昵称") }, modifier = Modifier.fillMaxWidth())
@@ -1922,136 +1723,3 @@ fun EditProfileDialog(
                             avatarUri = avatarUri,
                             grip = grip,
                             hand = hand,
-                            style = style,
-                            kaiqiuScore = kaiqiu.ifEmpty { "无" },
-                            aijuScore = aiju.ifEmpty { "无" },
-                            blade = blade.ifEmpty { "自定义底板" },
-                            forehand = forehand.ifEmpty { "常规反胶" },
-                            backhand = backhand.ifEmpty { "常规反胶" }
-                        )
-                    )
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = SportOrange)
-            ) { Text("保存", color = Color.White) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = TextSecondary) }
-        }
-    )
-}
-
-// ----------------- 10. 网页与搜索页面 -----------------
-@Composable
-fun KaiqiuWebScreen(onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(SportNavyBg)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().background(SportCardNavy).padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = TextPrimary)
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Text("开球网赛事直达", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        }
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    webViewClient = WebViewClient()
-                    loadUrl("https://www.kaiqiu.cc")
-                }
-            }
-        )
-    }
-}
-
-@Composable
-fun SearchFullScreen(onCancel: () -> Unit) {
-    var query by remember { mutableStateOf("") }
-    var selectedTab by remember { mutableStateOf(0) }
-    val resultTabs = listOf("本站", "B站", "抖音")
-
-    Column(modifier = Modifier.fillMaxSize().background(SportNavyBg).padding(horizontal = 16.dp)) {
-        Spacer(modifier = Modifier.height(14.dp))
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(20.dp), color = SportCardNavy, modifier = Modifier.weight(1f).height(44.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        placeholder = { Text("搜技术教学、装备型号、球友...", color = TextSecondary, fontSize = 14.sp) },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
-                        singleLine = true
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Text("取消", color = SportOrange, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.clickable { onCancel() })
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-            resultTabs.forEachIndexed { index, title ->
-                val isSelected = selectedTab == index
-                Column(modifier = Modifier.clickable { selectedTab = index }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = title, color = if (isSelected) SportOrange else TextSecondary, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 15.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (isSelected) Box(modifier = Modifier.width(28.dp).height(3.dp).background(SportOrange, RoundedCornerShape(2.dp)))
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        if (query.isEmpty()) {
-            Text("热门乒乓搜索", color = TextSecondary, fontSize = 13.sp)
-            Spacer(modifier = Modifier.height(10.dp))
-            FlowRowLayout(listOf("张继科 ALC 配胶", "反手拧拉要领", "狂飚3灌油", "业余积分赛规程", "生胶打法")) { tag -> query = tag }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(listOf("【${resultTabs[selectedTab]}】关于 \"$query\" 的实战讲解", "【${resultTabs[selectedTab]}】业余进阶必看：如何用好 $query")) { itemTitle ->
-                    Card(shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = SportCardNavy), modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(text = itemTitle, color = TextPrimary, fontSize = 14.sp)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(text = "来源: ${resultTabs[selectedTab]} · 站内播放支持", color = TextSecondary, fontSize = 11.sp)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun FlowRowLayout(tags: List<String>, onTagClick: (String) -> Unit) {
-    Column {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            tags.take(3).forEach { tag ->
-                Surface(shape = RoundedCornerShape(14.dp), color = SportCardNavy, modifier = Modifier.clickable { onTagClick(tag) }) {
-                    Text(text = tag, color = TextPrimary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            tags.drop(3).forEach { tag ->
-                Surface(shape = RoundedCornerShape(14.dp), color = SportCardNavy, modifier = Modifier.clickable { onTagClick(tag) }) {
-                    Text(text = tag, color = TextPrimary, fontSize = 12.sp)
-                }
-            }
-        }
-    }
-}
