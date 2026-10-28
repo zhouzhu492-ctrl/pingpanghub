@@ -19,7 +19,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
@@ -35,18 +38,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -56,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -73,7 +65,8 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.util.*
+import java.util.Calendar
+import java.util.Locale
 
 val IosSquircleMedium = RoundedCornerShape(18.dp)
 val IosSquircleLarge = RoundedCornerShape(24.dp)
@@ -136,7 +129,6 @@ enum class AppTheme(
     )
 }
 
-// 原生图片安全渲染组件（杜绝 Coil 外部依赖）
 @Composable
 fun SafeImage(uri: Uri?, modifier: Modifier = Modifier) {
     if (uri == null) return
@@ -405,7 +397,7 @@ object FeishuCloud {
 
 // ----------------- 本地存储双重持久化引擎 -----------------
 object AppStorage {
-    private const val PREF_NAME = "pingpong_db_v7"
+    private const val PREF_NAME = "pingpong_db_v8"
 
     fun saveLoginUser(context: Context, user: UserProfile?) {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -466,7 +458,9 @@ object AppStorage {
                 put("restriction", t.restriction)
                 put("fee", t.fee)
                 put("contact", t.contact)
+                put("contactImageUri", t.contactImageUri?.toString() ?: "")
                 put("detailText", t.detailText)
+                put("detailImageUri", t.detailImageUri?.toString() ?: "")
                 put("creatorPhone", t.creatorPhone)
                 put("isJoined", t.isJoined)
 
@@ -550,7 +544,9 @@ object AppStorage {
                     restriction = o.optString("restriction", "无限制"),
                     fee = o.optString("fee", "免费"),
                     contact = o.optString("contact"),
+                    contactImageUri = if (o.optString("contactImageUri").isNotEmpty()) Uri.parse(o.optString("contactImageUri")) else null,
                     detailText = o.optString("detailText"),
+                    detailImageUri = if (o.optString("detailImageUri").isNotEmpty()) Uri.parse(o.optString("detailImageUri")) else null,
                     creatorPhone = o.optString("creatorPhone"),
                     isJoined = o.optBoolean("isJoined"),
                     participants = pList,
@@ -883,23 +879,35 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                                 NavigationBarItem(
                                     selected = currentTab == 0,
                                     onClick = { currentTab = 0 },
-                                    icon = { Icon(Icons.Default.Home, contentDescription = "天地") },
+                                    icon = { Text("🏠", fontSize = 20.sp) },
                                     label = { Text("天地", fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = navColors(currentTheme)
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedTextColor = currentTheme.primary,
+                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
+                                        unselectedTextColor = currentTheme.textSecondary
+                                    )
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == 1,
                                     onClick = { currentTab = 1 },
-                                    icon = { Icon(Icons.Default.Star, contentDescription = "赛事") },
+                                    icon = { Text("🏆", fontSize = 20.sp) },
                                     label = { Text("赛事", fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = navColors(currentTheme)
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedTextColor = currentTheme.primary,
+                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
+                                        unselectedTextColor = currentTheme.textSecondary
+                                    )
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == 2,
                                     onClick = { currentTab = 2 },
-                                    icon = { Icon(Icons.Default.Person, contentDescription = "我的") },
+                                    icon = { Text("👤", fontSize = 20.sp) },
                                     label = { Text("我的", fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = navColors(currentTheme)
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedTextColor = currentTheme.primary,
+                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
+                                        unselectedTextColor = currentTheme.textSecondary
+                                    )
                                 )
                             }
                         }
@@ -914,7 +922,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                                 contentColor = currentTheme.buttonText,
                                 shape = IosSquirclePill
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = "新建", modifier = Modifier.size(28.dp))
+                                Text("＋", fontSize = 26.sp, color = currentTheme.buttonText, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -970,15 +978,6 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
         }
     }
 }
-
-@Composable
-fun navColors(theme: AppTheme) = NavigationBarItemDefaults.colors(
-    selectedIconColor = theme.primary,
-    selectedTextColor = theme.primary,
-    indicatorColor = theme.primary.copy(alpha = 0.15f),
-    unselectedIconColor = theme.textSecondary,
-    unselectedTextColor = theme.textSecondary
-)
 
 @Composable
 fun LockScreenOrientation(orientation: Int) {
@@ -1037,12 +1036,7 @@ fun LoginScreen(theme: AppTheme, onLoginSuccess: (UserProfile) -> Unit) {
                     label = { Text("手机号", color = theme.textSecondary) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = theme.primary,
-                        unfocusedBorderColor = theme.borderLight,
-                        focusedTextColor = theme.textPrimary,
-                        unfocusedTextColor = theme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = theme.textPrimary, fontSize = 15.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1052,12 +1046,7 @@ fun LoginScreen(theme: AppTheme, onLoginSuccess: (UserProfile) -> Unit) {
                     onValueChange = { name = it },
                     label = { Text("球友昵称", color = theme.textSecondary) },
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = theme.primary,
-                        unfocusedBorderColor = theme.borderLight,
-                        focusedTextColor = theme.textPrimary,
-                        unfocusedTextColor = theme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = theme.textPrimary, fontSize = 15.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1114,7 +1103,7 @@ fun CommunityScreen(
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = theme.textSecondary, modifier = Modifier.size(20.dp))
+                Text("🔍", fontSize = 16.sp)
                 Spacer(modifier = Modifier.width(10.dp))
                 Text("搜器材评测、技术教学(B站/抖音直达)...", color = theme.textSecondary, fontSize = 13.5.sp)
             }
@@ -1257,12 +1246,7 @@ fun PostItemCard(post: Post, theme: AppTheme, onClick: () -> Unit) {
                             post.likes = likesCount
                         }
                     ) {
-                        Icon(
-                            if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = null,
-                            tint = if (isLiked) theme.primary else theme.textSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Text(if (isLiked) "❤️" else "🤍", fontSize = 15.sp)
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(if (likesCount > 0) "$likesCount" else "赞", color = if (isLiked) theme.primary else theme.textSecondary, fontSize = 12.sp)
                     }
@@ -1299,7 +1283,7 @@ fun PostDetailScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
+                    Text("‹", color = theme.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Text("动态详情与交流", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -1365,12 +1349,7 @@ fun PostDetailScreen(
                             post.likes = likesCount
                         }
                     ) {
-                        Icon(
-                            if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = null,
-                            tint = if (isLiked) theme.primary else theme.textSecondary,
-                            modifier = Modifier.size(17.dp)
-                        )
+                        Text(if (isLiked) "❤️" else "🤍", fontSize = 15.sp)
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(if (likesCount > 0) "$likesCount" else "点赞", color = if (isLiked) theme.primary else theme.textSecondary, fontSize = 13.sp)
                     }
@@ -1434,18 +1413,13 @@ fun PostDetailScreen(
                     IconButton(
                         onClick = { commentPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "选图", tint = theme.primary)
+                        Text("📷", fontSize = 20.sp)
                     }
                     OutlinedTextField(
                         value = replyText,
                         onValueChange = { replyText = it },
                         placeholder = { Text("友善回帖，交流心得...", color = theme.textSecondary, fontSize = 13.5.sp) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = theme.primary,
-                            unfocusedBorderColor = theme.borderLight,
-                            focusedTextColor = theme.textPrimary,
-                            unfocusedTextColor = theme.textPrimary
-                        ),
+                        textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                         shape = IosSquircleMedium,
                         singleLine = true,
                         modifier = Modifier.weight(1f)
@@ -1540,7 +1514,7 @@ fun TournamentDetailScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
+                        Text("‹", color = theme.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Text("赛事详情与赛程", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -1554,7 +1528,7 @@ fun TournamentDetailScreen(
                         Toast.makeText(context, "比赛网址与邀请已复制到剪贴板！", Toast.LENGTH_SHORT).show()
                     }
                 ) {
-                    Icon(Icons.Default.Share, contentDescription = "分享", tint = theme.primary)
+                    Text("🔗", fontSize = 20.sp)
                 }
             }
         }
@@ -1802,6 +1776,7 @@ fun TournamentAdminScreen(
                             onValueChange = { scoreInputA = it },
                             label = { Text("${match.playerA}局分") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
@@ -1809,6 +1784,7 @@ fun TournamentAdminScreen(
                             onValueChange = { scoreInputB = it },
                             label = { Text("${match.playerB}局分") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -1845,7 +1821,7 @@ fun TournamentAdminScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
+                        Text("‹", color = theme.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Text("创办者赛事后台", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -1948,7 +1924,7 @@ fun TournamentScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.size(44.dp).background(theme.primary, CircleShape), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Star, contentDescription = null, tint = theme.buttonText)
+                        Text("⭐", fontSize = 20.sp)
                     }
                     Spacer(modifier = Modifier.width(14.dp))
                     Column {
@@ -2242,6 +2218,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     onValueChange = { tempEditName = it },
                     placeholder = { Text("输入选手名字（如马龙、张继科）", color = theme.textSecondary) },
                     singleLine = true,
+                    textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                     shape = IosSquircleMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2271,7 +2248,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onClose) {
-                Icon(Icons.Default.Close, contentDescription = "退出", tint = Color.White)
+                Text("✕", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 TextButton(
@@ -2296,7 +2273,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     },
                     enabled = history.isNotEmpty()
                 ) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = null, tint = if (history.isNotEmpty()) Color.White else theme.textSecondary)
+                    Text("↩", fontSize = 18.sp, color = if (history.isNotEmpty()) Color.White else theme.textSecondary)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("撤销", color = if (history.isNotEmpty()) Color.White else theme.textSecondary)
                 }
@@ -2349,7 +2326,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     ) {
                         Text(playerAName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = theme.textSecondary, modifier = Modifier.size(15.dp))
+                        Text("✏️", fontSize = 14.sp)
                         if (currentServerIsA) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Surface(shape = CircleShape, color = theme.primary) {
@@ -2417,7 +2394,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     ) {
                         Text(playerBName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Icon(Icons.Default.Edit, contentDescription = "修改", tint = theme.textSecondary, modifier = Modifier.size(15.dp))
+                        Text("✏️", fontSize = 14.sp)
                         if (!currentServerIsA) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Surface(shape = CircleShape, color = theme.primary) {
@@ -2453,20 +2430,13 @@ fun SearchFullScreen(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = IosSquircleLarge, color = theme.surfaceCard, modifier = Modifier.weight(1f).height(46.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.border(0.6.dp, theme.borderLight, IosSquircleLarge).padding(horizontal = 14.dp)) {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = theme.textSecondary)
+                    Text("🔍", fontSize = 16.sp)
                     Spacer(modifier = Modifier.width(8.dp))
                     TextField(
                         value = query,
                         onValueChange = { query = it },
                         placeholder = { Text("搜器材、战术打法、发球技巧...", color = theme.textSecondary, fontSize = 14.sp) },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedTextColor = theme.textPrimary,
-                            unfocusedTextColor = theme.textPrimary,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                         singleLine = true
                     )
                 }
@@ -2549,7 +2519,7 @@ fun CommonWebViewScreen(url: String, theme: AppTheme, onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
+                    Text("‹", color = theme.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Text("站内直达页面", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.5.sp)
@@ -2659,10 +2629,7 @@ fun EditProfileDialog(
                     onValueChange = { name = it },
                     label = { Text("球友昵称", color = currentTheme.textSecondary) },
                     shape = IosSquircleMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = currentTheme.textPrimary,
-                        unfocusedTextColor = currentTheme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -2672,10 +2639,7 @@ fun EditProfileDialog(
                         onValueChange = { grip = it },
                         label = { Text("板型(横/直)", color = currentTheme.textSecondary) },
                         shape = IosSquircleMedium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = currentTheme.textPrimary,
-                            unfocusedTextColor = currentTheme.textPrimary
-                        ),
+                        textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
@@ -2683,10 +2647,7 @@ fun EditProfileDialog(
                         onValueChange = { hand = it },
                         label = { Text("左右手", color = currentTheme.textSecondary) },
                         shape = IosSquircleMedium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = currentTheme.textPrimary,
-                            unfocusedTextColor = currentTheme.textPrimary
-                        ),
+                        textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -2696,10 +2657,7 @@ fun EditProfileDialog(
                     onValueChange = { style = it },
                     label = { Text("核心打法", color = currentTheme.textSecondary) },
                     shape = IosSquircleMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = currentTheme.textPrimary,
-                        unfocusedTextColor = currentTheme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -2709,10 +2667,7 @@ fun EditProfileDialog(
                         onValueChange = { str -> if (str == "无" || str.all { it.isDigit() }) kaiqiu = str },
                         label = { Text("开球网(数字/无)", color = currentTheme.textSecondary) },
                         shape = IosSquircleMedium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = currentTheme.textPrimary,
-                            unfocusedTextColor = currentTheme.textPrimary
-                        ),
+                        textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
@@ -2720,10 +2675,7 @@ fun EditProfileDialog(
                         onValueChange = { str -> if (str == "无" || str.all { it.isDigit() }) aiju = str },
                         label = { Text("爱聚网(数字/无)", color = currentTheme.textSecondary) },
                         shape = IosSquircleMedium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = currentTheme.textPrimary,
-                            unfocusedTextColor = currentTheme.textPrimary
-                        ),
+                        textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -2733,10 +2685,7 @@ fun EditProfileDialog(
                     onValueChange = { blade = it },
                     label = { Text("底板型号", color = currentTheme.textSecondary) },
                     shape = IosSquircleMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = currentTheme.textPrimary,
-                        unfocusedTextColor = currentTheme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -2744,10 +2693,7 @@ fun EditProfileDialog(
                     onValueChange = { forehand = it },
                     label = { Text("正手胶皮", color = currentTheme.textSecondary) },
                     shape = IosSquircleMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = currentTheme.textPrimary,
-                        unfocusedTextColor = currentTheme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -2755,10 +2701,7 @@ fun EditProfileDialog(
                     onValueChange = { backhand = it },
                     label = { Text("反手胶皮", color = currentTheme.textSecondary) },
                     shape = IosSquircleMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = currentTheme.textPrimary,
-                        unfocusedTextColor = currentTheme.textPrimary
-                    ),
+                    textStyle = TextStyle(color = currentTheme.textPrimary, fontSize = 14.sp),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -2943,10 +2886,7 @@ fun CreateTournamentFullScreen(
             onValueChange = { detailText = it },
             placeholder = { Text("在此输入更详细的奖励规则、签到说明...", color = theme.textSecondary, fontSize = 13.sp) },
             shape = IosSquircleMedium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = theme.textPrimary,
-                unfocusedTextColor = theme.textPrimary
-            ),
+            textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
             modifier = Modifier.fillMaxWidth().height(90.dp)
         )
 
@@ -3041,14 +2981,7 @@ fun CreatePostFullScreen(
             value = content,
             onValueChange = { content = it },
             placeholder = { Text("这一刻的想法，或是约球安排...", color = theme.textSecondary, fontSize = 15.sp) },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                focusedTextColor = theme.textPrimary,
-                unfocusedTextColor = theme.textPrimary,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            ),
+            textStyle = TextStyle(color = theme.textPrimary, fontSize = 15.sp),
             modifier = Modifier.fillMaxWidth().height(140.dp)
         )
 
@@ -3068,7 +3001,7 @@ fun CreatePostFullScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = theme.textSecondary, modifier = Modifier.size(28.dp))
+                        Text("📷", fontSize = 24.sp)
                         Text("照片", color = theme.textSecondary, fontSize = 11.5.sp)
                     }
                 }
@@ -3082,7 +3015,7 @@ fun CreatePostFullScreen(
                         onClick = { selectedImageUri = null },
                         modifier = Modifier.align(Alignment.TopEnd).size(24.dp).background(Color.Black.copy(alpha = 0.6f), CircleShape)
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        Text("✕", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -3098,14 +3031,7 @@ fun CreatePostFullScreen(
                 value = location,
                 onValueChange = { location = it },
                 placeholder = { Text("添加所在位置 (选填)", color = theme.textSecondary, fontSize = 14.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedTextColor = theme.textPrimary,
-                    unfocusedTextColor = theme.textPrimary,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
-                ),
+                textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -3156,7 +3082,7 @@ fun CreatePostFullScreen(
     }
 }
 
-// ----------------- 通用组件 -----------------
+// ----------------- 通用表单项 -----------------
 @Composable
 fun TournamentInputItem(theme: AppTheme, label: String, value: String, hint: String, onValueChange: (String) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -3167,14 +3093,7 @@ fun TournamentInputItem(theme: AppTheme, label: String, value: String, hint: Str
                 value = value,
                 onValueChange = onValueChange,
                 placeholder = { Text(hint, color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 13.5.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedTextColor = theme.textPrimary,
-                    unfocusedTextColor = theme.textPrimary,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
-                ),
+                textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                 singleLine = true
             )
         }
@@ -3213,6 +3132,7 @@ fun NumberOnlyInputDialog(title: String, theme: AppTheme, onDismiss: () -> Unit,
                 onValueChange = { str -> if (str.all { it.isDigit() }) input = str },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 placeholder = { Text("在此输入纯数字", color = theme.textSecondary) },
+                textStyle = TextStyle(color = theme.textPrimary, fontSize = 14.sp),
                 shape = IosSquircleMedium,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
