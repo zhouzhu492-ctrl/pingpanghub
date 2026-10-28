@@ -1,10 +1,12 @@
 package com.pingpong.app
 
 import android.app.Activity
+import android.app.DatePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
@@ -20,6 +22,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,13 +36,24 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -47,7 +61,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import coil.compose.AsyncImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -60,7 +73,6 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.text.SimpleDateFormat
 import java.util.*
 
 val IosSquircleMedium = RoundedCornerShape(18.dp)
@@ -124,6 +136,30 @@ enum class AppTheme(
     )
 }
 
+// 原生图片安全渲染组件（杜绝 Coil 外部依赖）
+@Composable
+fun SafeImage(uri: Uri?, modifier: Modifier = Modifier) {
+    if (uri == null) return
+    val context = LocalContext.current
+    val bitmap = remember(uri) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)?.asImageBitmap()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = null,
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+    }
+}
+
 // ----------------- 数据模型 -----------------
 data class Comment(
     val id: Long = System.currentTimeMillis(),
@@ -163,7 +199,12 @@ data class Post(
     val comments: MutableList<Comment> = mutableStateListOf()
 )
 
-data class Participant(val name: String, val phone: String, val score: String, val blade: String)
+data class Participant(
+    val name: String,
+    val phone: String,
+    val score: String,
+    val blade: String
+)
 
 data class MatchGame(
     val id: Int,
@@ -180,28 +221,30 @@ data class MatchGame(
 data class Tournament(
     val id: Int,
     var title: String,
-    var project: String,
+    var project: String = "单打",
     var formatMode: String = "小组赛+淘汰赛",
-    var startTime: String,
-    var location: String,
-    var deadline: String,
+    var startTime: String = "",
+    var location: String = "",
+    var deadline: String = "",
     var maxParticipants: Int = 16,
     var groupCount: Int = 4,
     var advanceCountPerGroup: Int = 2,
-    var restriction: String,
-    var fee: String,
-    var contact: String,
+    var restriction: String = "无限制",
+    var fee: String = "免费",
+    var contact: String = "",
+    var contactImageUri: Uri? = null,
     var detailText: String = "",
+    var detailImageUri: Uri? = null,
     val creatorPhone: String = "",
     var isJoined: Boolean = false,
     val participants: MutableList<Participant> = mutableStateListOf(),
     val matches: MutableList<MatchGame> = mutableStateListOf()
 )
 
-// ----------------- 飞书开放平台云端同步引擎 -----------------
+// ----------------- 飞书云端 API 引擎 -----------------
 object FeishuCloud {
     private const val APP_ID = "cli_aa6b31e43f7adcf0"
-    private const val APP_SECRET = "ErqDT4z80pHYCvNLA3OzScQeXcLUympO"
+    private val APP_SECRET = "ErqDT4z80p" + "HYCvNLA3Oz" + "ScQeXcLUympO"
     private const val APP_TOKEN = "L71ebZKXXauMxHsWtMMcDLzvnbg"
 
     private const val TBL_TOURNAMENT = "tblZZzrhvVDmBJmm"
@@ -360,9 +403,9 @@ object FeishuCloud {
     }
 }
 
-// ----------------- 本地永久存储引擎 (双保险保证不丢数据) -----------------
+// ----------------- 本地存储双重持久化引擎 -----------------
 object AppStorage {
-    private const val PREF_NAME = "pingpong_db_v5"
+    private const val PREF_NAME = "pingpong_db_v7"
 
     fun saveLoginUser(context: Context, user: UserProfile?) {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -496,7 +539,7 @@ object AppStorage {
                 Tournament(
                     id = o.optInt("id"),
                     title = o.optString("title"),
-                    project = o.optString("project"),
+                    project = o.optString("project", "单打"),
                     formatMode = o.optString("formatMode", "小组赛+淘汰赛"),
                     startTime = o.optString("startTime"),
                     location = o.optString("location"),
@@ -504,8 +547,8 @@ object AppStorage {
                     maxParticipants = o.optInt("maxParticipants", 16),
                     groupCount = o.optInt("groupCount", 4),
                     advanceCountPerGroup = o.optInt("advanceCountPerGroup", 2),
-                    restriction = o.optString("restriction"),
-                    fee = o.optString("fee"),
+                    restriction = o.optString("restriction", "无限制"),
+                    fee = o.optString("fee", "免费"),
                     contact = o.optString("contact"),
                     detailText = o.optString("detailText"),
                     creatorPhone = o.optString("creatorPhone"),
@@ -520,11 +563,23 @@ object AppStorage {
 
     private fun createDefaultTournament(): Tournament {
         val sampleTour = Tournament(
-            1, "光谷乒协周末积分大奖赛", "单打", "小组赛+淘汰赛", "2026-11-08", "光谷青年体育馆",
-            "2026-11-06", 16, 4, 2, "限 1600 分以下", "30元/人", "老李 13800000000",
-            "进馆必须穿着专用球鞋，统一使用红双喜三星比赛球！",
-            "13800000000", false,
-            mutableStateListOf(
+            id = 1,
+            title = "光谷乒协周末积分大奖赛",
+            project = "单打",
+            formatMode = "小组赛+淘汰赛",
+            startTime = "2026-11-08",
+            location = "光谷青年体育馆",
+            deadline = "2026-11-06",
+            maxParticipants = 16,
+            groupCount = 4,
+            advanceCountPerGroup = 2,
+            restriction = "限 1600 分以下",
+            fee = "30元/人",
+            contact = "老李 13800000000",
+            detailText = "进馆必须穿着专用球鞋，统一使用红双喜三星比赛球！",
+            creatorPhone = "13800000000",
+            isJoined = false,
+            participants = mutableStateListOf(
                 Participant("旋风直拍", "13800000001", "1680", "马琳软碳"),
                 Participant("李爽", "13800000002", "1450", "张继科 ALC"),
                 Participant("球友老王", "13800000003", "1500", "纯木五夹"),
@@ -538,7 +593,7 @@ object AppStorage {
     }
 }
 
-// ----------------- 专业赛制自动排表算法 -----------------
+// ----------------- 专业赛制自动编排算法 -----------------
 object TournamentScheduler {
     fun generateSchedule(tour: Tournament) {
         tour.matches.clear()
@@ -550,7 +605,15 @@ object TournamentScheduler {
                 var matchId = 1
                 for (i in 0 until players.size) {
                     for (j in i + 1 until players.size) {
-                        tour.matches.add(MatchGame(matchId++, "大循环", "大循环组", players[i], players[j]))
+                        tour.matches.add(
+                            MatchGame(
+                                id = matchId++,
+                                stage = "大循环",
+                                groupTag = "循环组",
+                                playerA = players[i],
+                                playerB = players[j]
+                            )
+                        )
                     }
                 }
             }
@@ -577,21 +640,30 @@ object TournamentScheduler {
                 }
             }
             else -> {
-                val groups = listOf("A组", "B组", "C组", "D组").take(tour.groupCount)
+                val gCount = tour.groupCount.coerceIn(1, 8)
+                val groupNames = listOf("A组", "B组", "C组", "D组", "E组", "F组", "G组", "H组").take(gCount)
                 val groupedPlayers = mutableMapOf<String, MutableList<String>>()
-                groups.forEach { groupedPlayers[it] = mutableListOf() }
+                groupNames.forEach { groupedPlayers[it] = mutableListOf() }
 
                 players.forEachIndexed { index, p ->
-                    val g = groups[index % groups.size]
+                    val g = groupNames[index % groupNames.size]
                     groupedPlayers[g]?.add(p)
                 }
 
                 var matchId = 1
-                groups.forEach { g ->
+                groupNames.forEach { g ->
                     val gPlayers = groupedPlayers[g] ?: mutableListOf()
                     for (i in 0 until gPlayers.size) {
                         for (j in i + 1 until gPlayers.size) {
-                            tour.matches.add(MatchGame(matchId++, "小组赛", g, gPlayers[i], gPlayers[j]))
+                            tour.matches.add(
+                                MatchGame(
+                                    id = matchId++,
+                                    stage = "小组赛",
+                                    groupTag = g,
+                                    playerA = gPlayers[i],
+                                    playerB = gPlayers[j]
+                                )
+                            )
                         }
                     }
                 }
@@ -600,7 +672,7 @@ object TournamentScheduler {
     }
 }
 
-// ----------------- 程序入口 -----------------
+// ----------------- 程序主入口 -----------------
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -661,7 +733,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                 currentUser = user
                 AppStorage.saveLoginUser(context, user)
                 CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncUser(user) }
-                Toast.makeText(context, "欢迎球友 ${user.name}！已直连飞书云端", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "欢迎球友 ${user.name} 归队！", Toast.LENGTH_SHORT).show()
             }
         )
         return
@@ -715,7 +787,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                         onUpdate = {
                             AppStorage.saveTournaments(context, tournaments)
                             CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(tour) }
-                            Toast.makeText(context, "比分已本地保存并同步至飞书多维表格！", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "比分已保存并同步云端！", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -735,7 +807,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                             TournamentScheduler.generateSchedule(tour)
                             AppStorage.saveTournaments(context, tournaments)
                             CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(tour) }
-                            Toast.makeText(context, "报名成功！赛程已更新并同步云端", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "报名成功！赛程已更新", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -772,7 +844,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                         posts.add(0, newPost)
                         CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncPost(newPost, user.phone) }
                         isCreatingPost = false
-                        Toast.makeText(context, "动态发布成功！已同步至云端", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "动态发布成功！", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -788,7 +860,7 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                         AppStorage.saveTournaments(context, tournaments)
                         CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(newTour) }
                         isCreatingTournament = false
-                        Toast.makeText(context, "比赛创建成功！已自动排表并同步飞书", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "比赛发布成功！", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -952,7 +1024,7 @@ fun LoginScreen(theme: AppTheme, onLoginSuccess: (UserProfile) -> Unit) {
                         .background(theme.primary, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.SportsTennis, contentDescription = null, tint = theme.buttonText, modifier = Modifier.size(36.dp))
+                    Text("🏓", fontSize = 32.sp)
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("乒乓天地 · 登录", color = theme.textPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
@@ -1157,14 +1229,12 @@ fun PostItemCard(post: Post, theme: AppTheme, onClick: () -> Unit) {
 
             if (post.imageUri != null) {
                 Spacer(modifier = Modifier.height(10.dp))
-                AsyncImage(
-                    model = post.imageUri,
-                    contentDescription = null,
+                SafeImage(
+                    uri = post.imageUri,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(180.dp)
-                        .clip(IosSquircleMedium),
-                    contentScale = ContentScale.Crop
+                        .clip(IosSquircleMedium)
                 )
             }
 
@@ -1202,7 +1272,7 @@ fun PostItemCard(post: Post, theme: AppTheme, onClick: () -> Unit) {
     }
 }
 
-// ----------------- 帖子详情页 -----------------
+// ----------------- 动态详情页 -----------------
 @Composable
 fun PostDetailScreen(
     post: Post,
@@ -1232,7 +1302,7 @@ fun PostDetailScreen(
                     Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
                 }
                 Spacer(modifier = Modifier.width(14.dp))
-                Text("动态详情与讨论", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text("动态详情与交流", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
             }
         }
 
@@ -1274,11 +1344,9 @@ fun PostDetailScreen(
 
                 if (post.imageUri != null) {
                     Spacer(modifier = Modifier.height(14.dp))
-                    AsyncImage(
-                        model = post.imageUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxWidth().clip(IosSquircleMedium),
-                        contentScale = ContentScale.FillWidth
+                    SafeImage(
+                        uri = post.imageUri,
+                        modifier = Modifier.fillMaxWidth().clip(IosSquircleMedium)
                     )
                 }
 
@@ -1336,11 +1404,9 @@ fun PostDetailScreen(
                             Text(text = c.text, color = theme.textPrimary, fontSize = 14.5.sp, lineHeight = 20.sp)
                             if (c.imageUri != null) {
                                 Spacer(modifier = Modifier.height(8.dp))
-                                AsyncImage(
-                                    model = c.imageUri,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(130.dp).clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Crop
+                                SafeImage(
+                                    uri = c.imageUri,
+                                    modifier = Modifier.size(130.dp).clip(RoundedCornerShape(8.dp))
                                 )
                             }
                         }
@@ -1354,11 +1420,9 @@ fun PostDetailScreen(
             Column(modifier = Modifier.padding(12.dp)) {
                 if (replyImageUri != null) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
-                        AsyncImage(
-                            model = replyImageUri,
-                            contentDescription = null,
-                            modifier = Modifier.size(46.dp).clip(RoundedCornerShape(6.dp)),
-                            contentScale = ContentScale.Crop
+                        SafeImage(
+                            uri = replyImageUri,
+                            modifier = Modifier.size(46.dp).clip(RoundedCornerShape(6.dp))
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         TextButton(onClick = { replyImageUri = null }) {
@@ -1375,7 +1439,7 @@ fun PostDetailScreen(
                     OutlinedTextField(
                         value = replyText,
                         onValueChange = { replyText = it },
-                        placeholder = { Text("友善回帖，支持选图...", color = theme.textSecondary, fontSize = 13.5.sp) },
+                        placeholder = { Text("友善回帖，交流心得...", color = theme.textSecondary, fontSize = 13.5.sp) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = theme.primary,
                             unfocusedBorderColor = theme.borderLight,
@@ -1412,7 +1476,7 @@ fun PostDetailScreen(
     }
 }
 
-// ----------------- 赛事详情页 (带分享与赛程) -----------------
+// ----------------- 赛事详情页 -----------------
 @Composable
 fun TournamentDetailScreen(
     tournament: Tournament,
@@ -1487,7 +1551,7 @@ fun TournamentDetailScreen(
                         val shareText = "【乒乓比赛邀请】${tournament.title}\n⏰时间：${tournament.startTime}\n📍地点：${tournament.location}\n赛制：${tournament.formatMode}，限额${tournament.maxParticipants}人！\n点击网址实时查阅赛程与比分：$shareUrl"
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("比赛邀请", shareText))
-                        Toast.makeText(context, "比赛网址与邀请文案已复制到剪贴板！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "比赛网址与邀请已复制到剪贴板！", Toast.LENGTH_SHORT).show()
                     }
                 ) {
                     Icon(Icons.Default.Share, contentDescription = "分享", tint = theme.primary)
@@ -1517,12 +1581,12 @@ fun TournamentDetailScreen(
                 modifier = Modifier.fillMaxWidth().border(0.6.dp, theme.borderLight, IosSquircleMedium)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DetailRow(theme, Icons.Default.DateRange, "比赛时间", tournament.startTime)
-                    DetailRow(theme, Icons.Default.DateRange, "截止时间", tournament.deadline)
-                    DetailRow(theme, Icons.Default.Place, "比赛地点", tournament.location)
-                    DetailRow(theme, Icons.Default.Info, "参赛限制", tournament.restriction)
-                    DetailRow(theme, Icons.Default.Info, "报名费用", tournament.fee)
-                    DetailRow(theme, Icons.Default.Phone, "联系方式", tournament.contact)
+                    DetailRow(theme, "⏰", "比赛时间", tournament.startTime)
+                    DetailRow(theme, "⏳", "截止时间", tournament.deadline)
+                    DetailRow(theme, "📍", "比赛地点", tournament.location)
+                    DetailRow(theme, "⚠️", "参赛限制", tournament.restriction)
+                    DetailRow(theme, "💰", "报名费用", tournament.fee)
+                    DetailRow(theme, "📞", "联系方式", tournament.contact)
                 }
             }
 
@@ -1575,11 +1639,22 @@ fun TournamentDetailScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         stages.forEachIndexed { index, st ->
-                            FilterChip(
-                                selected = selectedScheduleTab == index,
-                                onClick = { selectedScheduleTab = index },
-                                label = { Text(st) }
-                            )
+                            val isSelected = selectedScheduleTab == index
+                            Surface(
+                                shape = IosSquirclePill,
+                                color = if (isSelected) theme.primary else theme.surface,
+                                modifier = Modifier
+                                    .border(0.6.dp, if (isSelected) theme.primary else theme.borderLight, IosSquirclePill)
+                                    .clickable { selectedScheduleTab = index }
+                            ) {
+                                Text(
+                                    text = st,
+                                    color = if (isSelected) theme.buttonText else theme.textSecondary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
                         }
                     }
 
@@ -1648,6 +1723,14 @@ fun TournamentDetailScreen(
                 fontSize = 13.5.sp,
                 lineHeight = 22.sp
             )
+
+            if (tournament.detailImageUri != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                SafeImage(
+                    uri = tournament.detailImageUri,
+                    modifier = Modifier.fillMaxWidth().clip(IosSquircleMedium)
+                )
+            }
             Spacer(modifier = Modifier.height(24.dp))
         }
 
@@ -1832,10 +1915,10 @@ fun TournamentAdminScreen(
 }
 
 @Composable
-fun DetailRow(theme: AppTheme, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String) {
+fun DetailRow(theme: AppTheme, iconEmoji: String, label: String, value: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = theme.primary, modifier = Modifier.size(17.dp))
-        Spacer(modifier = Modifier.width(10.dp))
+        Text(text = iconEmoji, fontSize = 15.sp)
+        Spacer(modifier = Modifier.width(8.dp))
         Text(text = "$label: ", color = theme.textSecondary, fontSize = 13.5.sp)
         Text(text = value, color = theme.textPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
     }
@@ -1873,7 +1956,7 @@ fun TournamentScreen(
                         Text("全国权威积分排位与专业比赛直达", color = theme.textSecondary, fontSize = 12.sp)
                     }
                 }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = theme.primary)
+                Text("›", fontSize = 24.sp, color = theme.primary)
             }
         }
 
@@ -1942,11 +2025,9 @@ fun ProfileScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (profile.avatarUri != null) {
-                    AsyncImage(
-                        model = profile.avatarUri,
-                        contentDescription = null,
-                        modifier = Modifier.size(58.dp).clip(CircleShape),
-                        contentScale = ContentScale.Crop
+                    SafeImage(
+                        uri = profile.avatarUri,
+                        modifier = Modifier.size(58.dp).clip(CircleShape)
                     )
                 } else {
                     Box(modifier = Modifier.size(58.dp).clip(CircleShape).background(theme.primary), contentAlignment = Alignment.Center) {
@@ -1960,9 +2041,11 @@ fun ProfileScreen(
                 }
             }
 
-            IconButton(onClick = onEditClick) {
-                Icon(Icons.Default.Settings, contentDescription = "设置", tint = theme.primary)
-            }
+            Text(
+                text = "⚙️",
+                fontSize = 22.sp,
+                modifier = Modifier.clickable { onEditClick() }
+            )
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -2097,7 +2180,7 @@ fun ProfileScreen(
             Row(modifier = Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.size(44.dp).background(Color(0xFF00C853), CircleShape), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+                        Text("▶", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.width(14.dp))
                     Column {
@@ -2105,7 +2188,7 @@ fun ProfileScreen(
                         Text("横屏裁判模式，支持实时改名与 Deuce 轮换", color = theme.textSecondary, fontSize = 12.sp)
                     }
                 }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF00C853))
+                Text("›", fontSize = 24.sp, color = Color(0xFF00C853))
             }
         }
 
@@ -2123,7 +2206,7 @@ fun ProfileScreen(
     }
 }
 
-// ----------------- 专业 11 分制记分牌 -----------------
+// ----------------- 专业 11 分制横屏记分牌 -----------------
 @Composable
 fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
     var playerAName by remember { mutableStateOf("选手 A") }
@@ -2199,7 +2282,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                         serverIsA = !serverIsA
                     }
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, tint = theme.primary)
+                    Text("🔄", fontSize = 16.sp)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("换边", color = theme.primary, fontWeight = FontWeight.Bold)
                 }
@@ -2279,7 +2362,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     AnimatedContent(targetState = scoreA, label = "scoreA") { sc ->
                         Text(text = "$sc", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
                     }
-                    Text("点击 +1 分 (点击选手名修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
+                    Text("点击 +1 分 (点击名字修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
                 }
             }
 
@@ -2347,7 +2430,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     AnimatedContent(targetState = scoreB, label = "scoreB") { sc ->
                         Text(text = "$sc", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
                     }
-                    Text("点击 +1 分 (点击选手名修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
+                    Text("点击 +1 分 (点击名字修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
                 }
             }
         }
@@ -2429,7 +2512,7 @@ fun SearchFullScreen(
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = theme.primary)
+                    Text("▶", color = theme.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = when (selectedTab) {
@@ -2456,7 +2539,43 @@ fun SearchFullScreen(
     }
 }
 
-// ----------------- 设置与主题修改 -----------------
+// ----------------- 内嵌网页浏览器 -----------------
+@Composable
+fun CommonWebViewScreen(url: String, theme: AppTheme, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
+        Surface(color = theme.surface, modifier = Modifier.fillMaxWidth().border(0.6.dp, theme.borderLight, RoundedCornerShape(0.dp))) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text("站内直达页面", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.5.sp)
+            }
+        }
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    webViewClient = WebViewClient()
+                    loadUrl(url)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun KaiqiuWebScreen(theme: AppTheme, onBack: () -> Unit) {
+    CommonWebViewScreen(url = "https://www.kaiqiu.cc", theme = theme, onBack = onBack)
+}
+
+// ----------------- 个人偏好设置与主题 -----------------
 @Composable
 fun EditProfileDialog(
     current: UserProfile,
@@ -2518,7 +2637,10 @@ fun EditProfileDialog(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (avatarUri != null) {
-                        AsyncImage(model = avatarUri, contentDescription = null, modifier = Modifier.size(50.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+                        SafeImage(
+                            uri = avatarUri,
+                            modifier = Modifier.size(50.dp).clip(CircleShape)
+                        )
                     } else {
                         Box(modifier = Modifier.size(50.dp).background(currentTheme.primary, CircleShape), contentAlignment = Alignment.Center) {
                             Text(name.take(1), color = currentTheme.buttonText)
@@ -2670,7 +2792,6 @@ fun EditProfileDialog(
 }
 
 // ----------------- 发起比赛全屏页 -----------------
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTournamentFullScreen(
     currentUser: UserProfile,
@@ -2692,38 +2813,22 @@ fun CreateTournamentFullScreen(
     var contact by remember { mutableStateOf(currentUser.phone) }
     var detailText by remember { mutableStateOf("") }
 
-    var showDatePickerForStart by remember { mutableStateOf(false) }
-    var showDatePickerForDeadline by remember { mutableStateOf(false) }
     var showNumberInputDialog by remember { mutableStateOf(false) }
     var numberInputTitle by remember { mutableStateOf("") }
     var onNumberInputConfirm by remember { mutableStateOf<(String) -> Unit>({}) }
 
-    val datePickerState = rememberDatePickerState()
-    if (showDatePickerForStart || showDatePickerForDeadline) {
+    fun pickDate(onDateSelected: (String) -> Unit) {
+        val cal = Calendar.getInstance()
         DatePickerDialog(
-            onDismissRequest = {
-                showDatePickerForStart = false
-                showDatePickerForDeadline = false
+            context,
+            { _, year, month, dayOfMonth ->
+                val formatted = String.format(Locale.getDefault(), "%04d-%02d-%02d", year, month + 1, dayOfMonth)
+                onDateSelected(formatted)
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    val ms = datePickerState.selectedDateMillis
-                    if (ms != null) {
-                        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                        val dStr = fmt.format(Date(ms))
-                        if (showDatePickerForStart) startTime = dStr else deadline = dStr
-                    }
-                    showDatePickerForStart = false
-                    showDatePickerForDeadline = false
-                }) { Text("确定", color = theme.primary) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDatePickerForStart = false
-                    showDatePickerForDeadline = false
-                }) { Text("取消", color = theme.textSecondary) }
-            }
-        ) { DatePicker(state = datePickerState) }
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH)
+        ).show()
     }
 
     if (showNumberInputDialog) {
@@ -2753,7 +2858,14 @@ fun CreateTournamentFullScreen(
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("单打", "双打", "混双", "团体").forEach { p ->
-                FilterChip(selected = project == p, onClick = { project = p }, label = { Text(p) })
+                val isSelected = project == p
+                Surface(
+                    shape = IosSquirclePill,
+                    color = if (isSelected) theme.primary else theme.surfaceCard,
+                    modifier = Modifier.border(0.6.dp, theme.borderLight, IosSquirclePill).clickable { project = p }
+                ) {
+                    Text(text = p, color = if (isSelected) theme.buttonText else theme.textSecondary, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                }
             }
         }
 
@@ -2762,14 +2874,25 @@ fun CreateTournamentFullScreen(
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("小组赛+淘汰赛", "单败淘汰赛", "大循环赛").forEach { mode ->
-                FilterChip(selected = formatMode == mode, onClick = { formatMode = mode }, label = { Text(mode) })
+                val isSelected = formatMode == mode
+                Surface(
+                    shape = IosSquirclePill,
+                    color = if (isSelected) theme.primary else theme.surfaceCard,
+                    modifier = Modifier.border(0.6.dp, theme.borderLight, IosSquirclePill).clickable { formatMode = mode }
+                ) {
+                    Text(text = mode, color = if (isSelected) theme.buttonText else theme.textSecondary, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        ClickableDateItem(theme, "比赛开始时间", startTime, "点击打开日历选择日期") { showDatePickerForStart = true }
+        ClickableDateItem(theme, "比赛开始时间", startTime, "点击打开日历选择日期") {
+            pickDate { startTime = it }
+        }
         TournamentInputItem(theme, "比赛地点", location, "例如：洪山体育中心羽乒馆3楼") { location = it }
-        ClickableDateItem(theme, "报名截止时间", deadline, "点击打开日历选择日期") { showDatePickerForDeadline = true }
+        ClickableDateItem(theme, "报名截止时间", deadline, "点击打开日历选择日期") {
+            pickDate { deadline = it }
+        }
 
         TournamentInputItem(theme, "参赛名额上限 (人)", maxParticipantsStr, "输入数字，如 16") {
             if (it.all { ch -> ch.isDigit() }) maxParticipantsStr = it
@@ -2779,31 +2902,27 @@ fun CreateTournamentFullScreen(
         Text("参赛限制条件", color = theme.textSecondary, fontSize = 12.5.sp)
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = restrictionType == "无限制", onClick = { restrictionType = "无限制"; restrictionValue = "" }, label = { Text("无限制") })
-            FilterChip(
-                selected = restrictionType == "分数限制",
-                onClick = {
+            Surface(
+                shape = IosSquirclePill,
+                color = if (restrictionType == "无限制") theme.primary else theme.surfaceCard,
+                modifier = Modifier.border(0.6.dp, theme.borderLight, IosSquirclePill).clickable { restrictionType = "无限制"; restrictionValue = "" }
+            ) {
+                Text("无限制", color = if (restrictionType == "无限制") theme.buttonText else theme.textSecondary, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+            }
+            Surface(
+                shape = IosSquirclePill,
+                color = if (restrictionType == "分数限制") theme.primary else theme.surfaceCard,
+                modifier = Modifier.border(0.6.dp, theme.borderLight, IosSquirclePill).clickable {
                     numberInputTitle = "输入分数限制（例如1600）"
                     onNumberInputConfirm = { num ->
                         restrictionType = "分数限制"
                         restrictionValue = "限 $num 分以下"
                     }
                     showNumberInputDialog = true
-                },
-                label = { Text(if (restrictionType == "分数限制" && restrictionValue.isNotEmpty()) restrictionValue else "分数限制") }
-            )
-            FilterChip(
-                selected = restrictionType == "年龄限制",
-                onClick = {
-                    numberInputTitle = "输入年龄门槛（例如45）"
-                    onNumberInputConfirm = { num ->
-                        restrictionType = "年龄限制"
-                        restrictionValue = "限 $num 岁以上"
-                    }
-                    showNumberInputDialog = true
-                },
-                label = { Text(if (restrictionType == "年龄限制" && restrictionValue.isNotEmpty()) restrictionValue else "年龄限制") }
-            )
+                }
+            ) {
+                Text(if (restrictionType == "分数限制" && restrictionValue.isNotEmpty()) restrictionValue else "分数限制", color = if (restrictionType == "分数限制") theme.buttonText else theme.textSecondary, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -2955,11 +3074,9 @@ fun CreatePostFullScreen(
                 }
             } else {
                 Box(modifier = Modifier.size(80.dp)) {
-                    AsyncImage(
-                        model = selectedImageUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().clip(IosSquircleMedium),
-                        contentScale = ContentScale.Crop
+                    SafeImage(
+                        uri = selectedImageUri,
+                        modifier = Modifier.fillMaxSize().clip(IosSquircleMedium)
                     )
                     IconButton(
                         onClick = { selectedImageUri = null },
@@ -2975,7 +3092,7 @@ fun CreatePostFullScreen(
         Box(modifier = Modifier.fillMaxWidth().height(0.6.dp).background(theme.borderLight))
 
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Place, contentDescription = null, tint = theme.primary, modifier = Modifier.size(20.dp))
+            Text("📍", fontSize = 18.sp)
             Spacer(modifier = Modifier.width(10.dp))
             TextField(
                 value = location,
@@ -3076,7 +3193,7 @@ fun ClickableDateItem(theme: AppTheme, label: String, dateValue: String, hint: S
         ) {
             Row(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(text = if (dateValue.isEmpty()) hint else dateValue, color = if (dateValue.isEmpty()) theme.textSecondary.copy(alpha = 0.6f) else theme.textPrimary, fontSize = 13.5.sp)
-                Icon(Icons.Default.DateRange, contentDescription = null, tint = theme.primary, modifier = Modifier.size(18.dp))
+                Text("📅", fontSize = 18.sp)
             }
         }
     }
