@@ -19,12 +19,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -395,9 +389,9 @@ object FeishuCloud {
     }
 }
 
-// ----------------- 本地存储双重持久化引擎 -----------------
+// ----------------- 本地存储持久化 -----------------
 object AppStorage {
-    private const val PREF_NAME = "pingpong_db_v8"
+    private const val PREF_NAME = "pingpong_db_v9"
 
     fun saveLoginUser(context: Context, user: UserProfile?) {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -737,26 +731,21 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
 
     val user = currentUser!!
 
-    AnimatedContent(
-        targetState = when {
-            isScoreboardOpen -> 8
-            externalWebUrl != null -> 7
-            isOpeningKaiqiuWeb -> 6
-            managingTournament != null -> 5
-            activeTournamentDetail != null -> 4
-            activePostDetail != null -> 3
-            isSearchActive -> 1
-            isCreatingPost -> 2
-            isCreatingTournament -> 9
-            else -> 0
-        },
-        transitionSpec = {
-            fadeIn(spring(dampingRatio = Spring.DampingRatioLowBouncy)) togetherWith
-            fadeOut(spring(dampingRatio = Spring.DampingRatioNoBouncy))
-        },
-        label = "NavTransition"
-    ) { screen ->
-        when (screen) {
+    val currentScreen = when {
+        isScoreboardOpen -> 8
+        externalWebUrl != null -> 7
+        isOpeningKaiqiuWeb -> 6
+        managingTournament != null -> 5
+        activeTournamentDetail != null -> 4
+        activePostDetail != null -> 3
+        isSearchActive -> 1
+        isCreatingPost -> 2
+        isCreatingTournament -> 9
+        else -> 0
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (currentScreen) {
             8 -> {
                 BackHandler { isScoreboardOpen = false }
                 LockScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
@@ -880,34 +869,19 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                                     selected = currentTab == 0,
                                     onClick = { currentTab = 0 },
                                     icon = { Text("🏠", fontSize = 20.sp) },
-                                    label = { Text("天地", fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedTextColor = currentTheme.primary,
-                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
-                                        unselectedTextColor = currentTheme.textSecondary
-                                    )
+                                    label = { Text("天地", fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Normal) }
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == 1,
                                     onClick = { currentTab = 1 },
                                     icon = { Text("🏆", fontSize = 20.sp) },
-                                    label = { Text("赛事", fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedTextColor = currentTheme.primary,
-                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
-                                        unselectedTextColor = currentTheme.textSecondary
-                                    )
+                                    label = { Text("赛事", fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Normal) }
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == 2,
                                     onClick = { currentTab = 2 },
                                     icon = { Text("👤", fontSize = 20.sp) },
-                                    label = { Text("我的", fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedTextColor = currentTheme.primary,
-                                        indicatorColor = currentTheme.primary.copy(alpha = 0.15f),
-                                        unselectedTextColor = currentTheme.textSecondary
-                                    )
+                                    label = { Text("我的", fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Normal) }
                                 )
                             }
                         }
@@ -2336,9 +2310,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("局分: $gameScoreA", color = theme.primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    AnimatedContent(targetState = scoreA, label = "scoreA") { sc ->
-                        Text(text = "$sc", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
-                    }
+                    Text(text = "$scoreA", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
                     Text("点击 +1 分 (点击名字修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
                 }
             }
@@ -2404,9 +2376,7 @@ fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("局分: $gameScoreB", color = theme.primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    AnimatedContent(targetState = scoreB, label = "scoreB") { sc ->
-                        Text(text = "$sc", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
-                    }
+                    Text(text = "$scoreB", color = Color.White, fontSize = 92.sp, fontWeight = FontWeight.Black)
                     Text("点击 +1 分 (点击名字修改)", color = theme.textSecondary.copy(alpha = 0.6f), fontSize = 12.sp)
                 }
             }
@@ -3177,3 +3147,4 @@ fun FlowRowLayout(tags: List<String>, theme: AppTheme, onTagClick: (String) -> U
         }
     }
 }
+这个
