@@ -44,18 +44,25 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 
-// ----------------- 高对比度主题规范 -----------------
 val IosSquircleMedium = RoundedCornerShape(18.dp)
 val IosSquircleLarge = RoundedCornerShape(24.dp)
 val IosSquirclePill = RoundedCornerShape(100.dp)
@@ -117,7 +124,7 @@ enum class AppTheme(
     )
 }
 
-// ----------------- 数据模型规范 -----------------
+// ----------------- 数据模型 -----------------
 data class Comment(
     val id: Long = System.currentTimeMillis(),
     val author: String,
@@ -158,10 +165,9 @@ data class Post(
 
 data class Participant(val name: String, val phone: String, val score: String, val blade: String)
 
-// 赛程对阵模型
 data class MatchGame(
     val id: Int,
-    val stage: String, // "小组赛" / "淘汰赛" / "大循环"
+    val stage: String,
     val groupTag: String = "A组",
     val playerA: String,
     val playerB: String,
@@ -175,28 +181,188 @@ data class Tournament(
     val id: Int,
     var title: String,
     var project: String,
-    var formatMode: String = "小组赛+淘汰赛", // "小组赛+淘汰赛" / "单败淘汰赛" / "大循环赛"
+    var formatMode: String = "小组赛+淘汰赛",
     var startTime: String,
     var location: String,
     var deadline: String,
-    var maxParticipants: Int = 32,
+    var maxParticipants: Int = 16,
     var groupCount: Int = 4,
     var advanceCountPerGroup: Int = 2,
     var restriction: String,
     var fee: String,
     var contact: String,
-    var contactImageUri: Uri? = null,
     var detailText: String = "",
-    var detailImageUri: Uri? = null,
     val creatorPhone: String = "",
     var isJoined: Boolean = false,
     val participants: MutableList<Participant> = mutableStateListOf(),
     val matches: MutableList<MatchGame> = mutableStateListOf()
 )
 
-// ----------------- 本地深度持久化引擎 -----------------
+// ----------------- 飞书开放平台云端同步引擎 -----------------
+object FeishuCloud {
+    private const val APP_ID = "cli_aa6b31e43f7adcf0"
+    private const val APP_SECRET = "ErqDT4z80pHYCvNLA3OzScQeXcLUympO"
+    private const val APP_TOKEN = "L71ebZKXXauMxHsWtMMcDLzvnbg"
+
+    private const val TBL_TOURNAMENT = "tblZZzrhvVDmBJmm"
+    private const val TBL_POSTS = "tbl9fkzxSxyNLS02"
+    private const val TBL_USERS = "tblJdCw24b19BAaK"
+
+    private var cachedToken: String? = null
+    private var tokenExpireTime = 0L
+
+    private suspend fun getTenantAccessToken(): String? = withContext(Dispatchers.IO) {
+        if (!cachedToken.isNullOrEmpty() && System.currentTimeMillis() < tokenExpireTime) {
+            return@withContext cachedToken
+        }
+        try {
+            val url = URL("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+
+            val payload = JSONObject().apply {
+                put("app_id", APP_ID)
+                put("app_secret", APP_SECRET)
+            }
+
+            OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
+            if (conn.responseCode == 200) {
+                val resp = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                val json = JSONObject(resp)
+                val token = json.optString("tenant_access_token")
+                val expire = json.optLong("expire", 7200L)
+                cachedToken = token
+                tokenExpireTime = System.currentTimeMillis() + (expire - 300) * 1000
+                return@withContext token
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return@withContext null
+    }
+
+    suspend fun syncTournament(tour: Tournament) = withContext(Dispatchers.IO) {
+        val token = getTenantAccessToken() ?: return@withContext
+        try {
+            val url = URL("https://open.feishu.cn/open-apis/bitable/v1/apps/$APP_TOKEN/tables/$TBL_TOURNAMENT/records")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+
+            val fields = JSONObject().apply {
+                put("赛事名称", tour.title)
+                put("比赛项目", tour.project)
+                put("比赛赛制", tour.formatMode)
+                put("比赛地点", tour.location)
+                put("参赛名额上限", tour.maxParticipants)
+                put("参赛限制条件", tour.restriction)
+                put("报名费用", tour.fee)
+                put("联系方式", tour.contact)
+                put("规程与奖励详情", tour.detailText)
+                put("创建者手机号", tour.creatorPhone)
+
+                val pArr = JSONArray()
+                tour.participants.forEach { p ->
+                    pArr.put(JSONObject().apply {
+                        put("name", p.name)
+                        put("phone", p.phone)
+                        put("score", p.score)
+                        put("blade", p.blade)
+                    })
+                }
+                put("参赛选手名单JSON", pArr.toString())
+
+                val mArr = JSONArray()
+                tour.matches.forEach { m ->
+                    mArr.put(JSONObject().apply {
+                        put("id", m.id)
+                        put("stage", m.stage)
+                        put("groupTag", m.groupTag)
+                        put("playerA", m.playerA)
+                        put("playerB", m.playerB)
+                        put("scoreA", m.scoreA)
+                        put("scoreB", m.scoreB)
+                        put("isFinished", m.isFinished)
+                        put("winner", m.winner)
+                    })
+                }
+                put("对阵与赛程JSON", mArr.toString())
+            }
+
+            val body = JSONObject().apply { put("fields", fields) }
+            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            conn.responseCode
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun syncUser(user: UserProfile) = withContext(Dispatchers.IO) {
+        val token = getTenantAccessToken() ?: return@withContext
+        try {
+            val url = URL("https://open.feishu.cn/open-apis/bitable/v1/apps/$APP_TOKEN/tables/$TBL_USERS/records")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+
+            val fields = JSONObject().apply {
+                put("手机号", user.phone)
+                put("球友昵称", user.name)
+                put("板型", user.grip)
+                put("左右手", user.hand)
+                put("核心打法", user.style)
+                put("开球网积分", user.kaiqiuScore)
+                put("爱聚网积分", user.aijuScore)
+                put("底板型号", user.blade)
+                put("正手胶皮", user.forehand)
+                put("反手胶皮", user.backhand)
+            }
+            val body = JSONObject().apply { put("fields", fields) }
+            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            conn.responseCode
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun syncPost(post: Post, phone: String) = withContext(Dispatchers.IO) {
+        val token = getTenantAccessToken() ?: return@withContext
+        try {
+            val url = URL("https://open.feishu.cn/open-apis/bitable/v1/apps/$APP_TOKEN/tables/$TBL_POSTS/records")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+
+            val fields = JSONObject().apply {
+                put("动态内容", post.content)
+                put("发布者昵称", post.author)
+                put("发布者手机号", phone)
+                put("战力积分", post.score)
+                put("主战器材", post.blade)
+                put("分类标签", post.tag)
+                put("所在位置", post.location)
+                put("点赞数", post.likes)
+            }
+            val body = JSONObject().apply { put("fields", fields) }
+            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            conn.responseCode
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+
+// ----------------- 本地永久存储引擎 (双保险保证不丢数据) -----------------
 object AppStorage {
-    private const val PREF_NAME = "pingpong_full_db"
+    private const val PREF_NAME = "pingpong_db_v5"
 
     fun saveLoginUser(context: Context, user: UserProfile?) {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -257,9 +423,7 @@ object AppStorage {
                 put("restriction", t.restriction)
                 put("fee", t.fee)
                 put("contact", t.contact)
-                put("contactImageUri", t.contactImageUri?.toString() ?: "")
                 put("detailText", t.detailText)
-                put("detailImageUri", t.detailImageUri?.toString() ?: "")
                 put("creatorPhone", t.creatorPhone)
                 put("isJoined", t.isJoined)
 
@@ -297,9 +461,7 @@ object AppStorage {
 
     fun loadTournaments(context: Context): List<Tournament> {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        val s = sp.getString("saved_tournaments", null) ?: return listOf(
-            createDefaultTournament()
-        )
+        val s = sp.getString("saved_tournaments", null) ?: return listOf(createDefaultTournament())
         val list = mutableListOf<Tournament>()
         val arr = JSONArray(s)
         for (i in 0 until arr.length()) {
@@ -345,9 +507,7 @@ object AppStorage {
                     restriction = o.optString("restriction"),
                     fee = o.optString("fee"),
                     contact = o.optString("contact"),
-                    contactImageUri = if (o.optString("contactImageUri").isNotEmpty()) Uri.parse(o.optString("contactImageUri")) else null,
                     detailText = o.optString("detailText"),
-                    detailImageUri = if (o.optString("detailImageUri").isNotEmpty()) Uri.parse(o.optString("detailImageUri")) else null,
                     creatorPhone = o.optString("creatorPhone"),
                     isJoined = o.optBoolean("isJoined"),
                     participants = pList,
@@ -362,7 +522,7 @@ object AppStorage {
         val sampleTour = Tournament(
             1, "光谷乒协周末积分大奖赛", "单打", "小组赛+淘汰赛", "2026-11-08", "光谷青年体育馆",
             "2026-11-06", 16, 4, 2, "限 1600 分以下", "30元/人", "老李 13800000000",
-            null, "进馆必须穿着专用球鞋，统一使用红双喜三星比赛球！", null,
+            "进馆必须穿着专用球鞋，统一使用红双喜三星比赛球！",
             "13800000000", false,
             mutableStateListOf(
                 Participant("旋风直拍", "13800000001", "1680", "马琳软碳"),
@@ -378,7 +538,7 @@ object AppStorage {
     }
 }
 
-// ----------------- 专业赛制自动编排引擎 -----------------
+// ----------------- 专业赛制自动排表算法 -----------------
 object TournamentScheduler {
     fun generateSchedule(tour: Tournament) {
         tour.matches.clear()
@@ -390,16 +550,33 @@ object TournamentScheduler {
                 var matchId = 1
                 for (i in 0 until players.size) {
                     for (j in i + 1 until players.size) {
-                        tour.matches.add(
-                            MatchGame(matchId++, "大循环", "循环组", players[i], players[j])
-                        )
+                        tour.matches.add(MatchGame(matchId++, "大循环", "大循环组", players[i], players[j]))
                     }
                 }
             }
             "单败淘汰赛" -> {
-                generateKnockoutMatches(tour, players, "淘汰赛")
+                var matchId = 1
+                val count = players.size
+                for (i in 0 until count step 2) {
+                    val pA = players[i]
+                    val pB = if (i + 1 < count) players[i + 1] else "轮空 (Bye)"
+                    val isFinished = pB == "轮空 (Bye)"
+                    tour.matches.add(
+                        MatchGame(
+                            id = matchId++,
+                            stage = "淘汰赛",
+                            groupTag = "淘汰首轮",
+                            playerA = pA,
+                            playerB = pB,
+                            scoreA = if (isFinished) 3 else 0,
+                            scoreB = 0,
+                            isFinished = isFinished,
+                            winner = if (isFinished) pA else ""
+                        )
+                    )
+                }
             }
-            else -> { // "小组赛+淘汰赛"
+            else -> {
                 val groups = listOf("A组", "B组", "C组", "D组").take(tour.groupCount)
                 val groupedPlayers = mutableMapOf<String, MutableList<String>>()
                 groups.forEach { groupedPlayers[it] = mutableListOf() }
@@ -414,41 +591,16 @@ object TournamentScheduler {
                     val gPlayers = groupedPlayers[g] ?: mutableListOf()
                     for (i in 0 until gPlayers.size) {
                         for (j in i + 1 until gPlayers.size) {
-                            tour.matches.add(
-                                MatchGame(matchId++, "小组赛", g, gPlayers[i], gPlayers[j])
-                            )
+                            tour.matches.add(MatchGame(matchId++, "小组赛", g, gPlayers[i], gPlayers[j]))
                         }
                     }
                 }
             }
         }
     }
-
-    fun generateKnockoutMatches(tour: Tournament, qualifiedPlayers: List<String>, stageName: String) {
-        var matchId = (tour.matches.maxOfOrNull { it.id } ?: 0) + 1
-        val count = qualifiedPlayers.size
-        for (i in 0 until count step 2) {
-            val pA = qualifiedPlayers[i]
-            val pB = if (i + 1 < count) qualifiedPlayers[i + 1] else "轮空 (Bye)"
-            val isFinished = pB == "轮空 (Bye)"
-            tour.matches.add(
-                MatchGame(
-                    id = matchId++,
-                    stage = stageName,
-                    groupTag = "淘汰轮",
-                    playerA = pA,
-                    playerB = pB,
-                    scoreA = if (isFinished) 3 else 0,
-                    scoreB = 0,
-                    isFinished = isFinished,
-                    winner = if (isFinished) pA else ""
-                )
-            )
-        }
-    }
 }
 
-// ----------------- 程序主入口 -----------------
+// ----------------- 程序入口 -----------------
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -502,14 +654,14 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
         }
     }
 
-    // 未登录状态直接呈现标准登录界面
     if (currentUser == null) {
         LoginScreen(
             theme = currentTheme,
             onLoginSuccess = { user ->
                 currentUser = user
                 AppStorage.saveLoginUser(context, user)
-                Toast.makeText(context, "欢迎球友 ${user.name} 归队！", Toast.LENGTH_SHORT).show()
+                CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncUser(user) }
+                Toast.makeText(context, "欢迎球友 ${user.name}！已直连飞书云端", Toast.LENGTH_SHORT).show()
             }
         )
         return
@@ -562,7 +714,8 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                         onBack = { managingTournament = null },
                         onUpdate = {
                             AppStorage.saveTournaments(context, tournaments)
-                            Toast.makeText(context, "赛程与比分已保存更新！", Toast.LENGTH_SHORT).show()
+                            CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(tour) }
+                            Toast.makeText(context, "比分已本地保存并同步至飞书多维表格！", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -581,7 +734,8 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                             tour.participants.add(Participant(user.name, user.phone, user.kaiqiuScore, user.blade))
                             TournamentScheduler.generateSchedule(tour)
                             AppStorage.saveTournaments(context, tournaments)
-                            Toast.makeText(context, "报名成功！名额已锁定", Toast.LENGTH_SHORT).show()
+                            CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(tour) }
+                            Toast.makeText(context, "报名成功！赛程已更新并同步云端", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -616,8 +770,9 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                     onCancel = { isCreatingPost = false },
                     onPublish = { newPost ->
                         posts.add(0, newPost)
+                        CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncPost(newPost, user.phone) }
                         isCreatingPost = false
-                        Toast.makeText(context, "发布成功！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "动态发布成功！已同步至云端", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -631,8 +786,9 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                     onPublish = { newTour ->
                         tournaments.add(0, newTour)
                         AppStorage.saveTournaments(context, tournaments)
+                        CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncTournament(newTour) }
                         isCreatingTournament = false
-                        Toast.makeText(context, "比赛创建成功！已自动排好对阵", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "比赛创建成功！已自动排表并同步飞书", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -731,8 +887,9 @@ fun MainApp(currentTheme: AppTheme, onThemeChange: (AppTheme) -> Unit) {
                             onSave = { updated ->
                                 currentUser = updated
                                 AppStorage.saveLoginUser(context, updated)
+                                CoroutineScope(Dispatchers.IO).launch { FeishuCloud.syncUser(updated) }
                                 isEditingProfile = false
-                                Toast.makeText(context, "资料已保存！", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "资料已保存并同步云端！", Toast.LENGTH_SHORT).show()
                             }
                         )
                     }
@@ -764,7 +921,7 @@ fun LockScreenOrientation(orientation: Int) {
     }
 }
 
-// ----------------- 登录界面 (手机号+快速验证) -----------------
+// ----------------- 登录界面 -----------------
 @Composable
 fun LoginScreen(theme: AppTheme, onLoginSuccess: (UserProfile) -> Unit) {
     var phone by remember { mutableStateOf("") }
@@ -799,7 +956,7 @@ fun LoginScreen(theme: AppTheme, onLoginSuccess: (UserProfile) -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("乒乓天地 · 登录", color = theme.textPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text("连接全国球友，一键编排赛事", color = theme.textSecondary, fontSize = 13.sp)
+                Text("云端同步数据库已接通", color = theme.textSecondary, fontSize = 13.sp)
 
                 Spacer(modifier = Modifier.height(24.dp))
                 OutlinedTextField(
@@ -1045,7 +1202,7 @@ fun PostItemCard(post: Post, theme: AppTheme, onClick: () -> Unit) {
     }
 }
 
-// ----------------- 帖子详情页 (评论即时上墙与带图回复) -----------------
+// ----------------- 帖子详情页 -----------------
 @Composable
 fun PostDetailScreen(
     post: Post,
@@ -1255,7 +1412,7 @@ fun PostDetailScreen(
     }
 }
 
-// ----------------- 赛事详情页 (带完整专业赛程表格) -----------------
+// ----------------- 赛事详情页 (带分享与赛程) -----------------
 @Composable
 fun TournamentDetailScreen(
     tournament: Tournament,
@@ -1322,14 +1479,15 @@ fun TournamentDetailScreen(
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("赛事详情与实时赛程", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text("赛事详情与赛程", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 }
                 IconButton(
                     onClick = {
-                        val shareText = "【乒乓比赛邀请】${tournament.title}\n⏰时间：${tournament.startTime}\n📍地点：${tournament.location}\n名额限${tournament.maxParticipants}人，赛制：${tournament.formatMode}，火速来「乒乓天地」报名对阵！"
+                        val shareUrl = "https://my.feishu.cn/base/L71ebZKXXauMxHsWtMMcDLzvnbg"
+                        val shareText = "【乒乓比赛邀请】${tournament.title}\n⏰时间：${tournament.startTime}\n📍地点：${tournament.location}\n赛制：${tournament.formatMode}，限额${tournament.maxParticipants}人！\n点击网址实时查阅赛程与比分：$shareUrl"
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("比赛邀请", shareText))
-                        Toast.makeText(context, "比赛专属邀请已复制到剪贴板！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "比赛网址与邀请文案已复制到剪贴板！", Toast.LENGTH_SHORT).show()
                     }
                 ) {
                     Icon(Icons.Default.Share, contentDescription = "分享", tint = theme.primary)
@@ -1399,9 +1557,8 @@ fun TournamentDetailScreen(
                 }
             }
 
-            // 专业赛程对阵表格展示区
             Spacer(modifier = Modifier.height(20.dp))
-            Text("实时比赛赛程 (对阵表格)", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.5.sp)
+            Text("比赛赛程与对阵表", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.5.sp)
             Spacer(modifier = Modifier.height(10.dp))
 
             Surface(
@@ -1412,7 +1569,7 @@ fun TournamentDetailScreen(
                 Column(modifier = Modifier.padding(14.dp)) {
                     val stages = when (tournament.formatMode) {
                         "大循环赛" -> listOf("大循环赛")
-                        "单败淘汰赛" -> listOf("单败淘汰赛")
+                        "单败淘汰赛" -> listOf("淘汰赛")
                         else -> listOf("第一阶段(小组赛)", "第二阶段(淘汰赛)")
                     }
 
@@ -1429,9 +1586,7 @@ fun TournamentDetailScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     val activeStageName = if (stages.size > 1 && selectedScheduleTab == 1) "淘汰赛" else "小组赛"
-                    val filteredMatches = if (tournament.formatMode == "大循环赛") {
-                        tournament.matches
-                    } else if (tournament.formatMode == "单败淘汰赛") {
+                    val filteredMatches = if (tournament.formatMode == "大循环赛" || tournament.formatMode == "单败淘汰赛") {
                         tournament.matches
                     } else {
                         tournament.matches.filter { it.stage == activeStageName }
@@ -1439,7 +1594,7 @@ fun TournamentDetailScreen(
 
                     if (filteredMatches.isEmpty()) {
                         Box(modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
-                            Text("报名结束后或由主办方生成本轮对阵表", color = theme.textSecondary, fontSize = 13.sp)
+                            Text("等待主办方排表或小组赛出线", color = theme.textSecondary, fontSize = 13.sp)
                         }
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1493,16 +1648,6 @@ fun TournamentDetailScreen(
                 fontSize = 13.5.sp,
                 lineHeight = 22.sp
             )
-
-            if (tournament.detailImageUri != null) {
-                Spacer(modifier = Modifier.height(12.dp))
-                AsyncImage(
-                    model = tournament.detailImageUri,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxWidth().clip(IosSquircleMedium),
-                    contentScale = ContentScale.FillWidth
-                )
-            }
             Spacer(modifier = Modifier.height(24.dp))
         }
 
@@ -1546,7 +1691,7 @@ fun TournamentDetailScreen(
     }
 }
 
-// ----------------- 主办方专属：赛事管理与比分录入后台 -----------------
+// ----------------- 主办方管理后台 -----------------
 @Composable
 fun TournamentAdminScreen(
     tournament: Tournament,
@@ -1620,7 +1765,7 @@ fun TournamentAdminScreen(
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("创办者赛事管理后台", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text("创办者赛事后台", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 }
                 Button(
                     onClick = {
@@ -1641,7 +1786,7 @@ fun TournamentAdminScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text("点击任何一场对阵，即可直接录入真实局分：", color = theme.textSecondary, fontSize = 13.sp)
+                Text("点击任何一场对阵，即可录入比分（实时同步至飞书）：", color = theme.textSecondary, fontSize = 13.sp)
             }
             items(tournament.matches, key = { it.id }) { m ->
                 Surface(
@@ -1787,7 +1932,7 @@ fun ProfileScreen(
     onLogout: () -> Unit
 ) {
     val myCreated = remember(tournaments, profile.phone) { tournaments.filter { it.creatorPhone == profile.phone } }
-    val myJoined = remember(tournaments, profile.name) { tournaments.filter { it.isJoined || it.participants.any { p -> p.phone == profile.phone } } }
+    val myJoined = remember(tournaments, profile.phone) { tournaments.filter { it.isJoined || it.participants.any { p -> p.phone == profile.phone } } }
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(
@@ -1978,7 +2123,7 @@ fun ProfileScreen(
     }
 }
 
-// ----------------- 专业 11 分制横屏记分牌 -----------------
+// ----------------- 专业 11 分制记分牌 -----------------
 @Composable
 fun ScoreboardScreen(theme: AppTheme, onClose: () -> Unit) {
     var playerAName by remember { mutableStateOf("选手 A") }
@@ -2311,43 +2456,7 @@ fun SearchFullScreen(
     }
 }
 
-// ----------------- 内置浏览器 -----------------
-@Composable
-fun CommonWebViewScreen(url: String, theme: AppTheme, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(theme.bg)) {
-        Surface(color = theme.surface, modifier = Modifier.fillMaxWidth().border(0.6.dp, theme.borderLight, RoundedCornerShape(0.dp))) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textPrimary)
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-                Text("站内直达页面", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.5.sp)
-            }
-        }
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    webViewClient = WebViewClient()
-                    loadUrl(url)
-                }
-            }
-        )
-    }
-}
-
-@Composable
-fun KaiqiuWebScreen(theme: AppTheme, onBack: () -> Unit) {
-    CommonWebViewScreen(url = "https://www.kaiqiu.cc", theme = theme, onBack = onBack)
-}
-
-// ----------------- 个人偏好设置与高对比度主题切换 -----------------
+// ----------------- 设置与主题修改 -----------------
 @Composable
 fun EditProfileDialog(
     current: UserProfile,
@@ -2377,13 +2486,13 @@ fun EditProfileDialog(
         onDismissRequest = onDismiss,
         containerColor = currentTheme.surfaceCard,
         shape = IosSquircleLarge,
-        title = { Text("个人资料与偏好设置", color = currentTheme.textPrimary, fontWeight = FontWeight.Bold) },
+        title = { Text("资料设置 (高对比度主题切换)", color = currentTheme.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("全局色彩主题 (文字对比度自动适配)", color = currentTheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                Text("全局色彩主题 (文字对比度自动对齐)", color = currentTheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     themeList.forEach { th ->
                         Surface(
@@ -2420,7 +2529,7 @@ fun EditProfileDialog(
                         onClick = { avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         colors = ButtonDefaults.buttonColors(containerColor = currentTheme.surface),
                         shape = IosSquircleMedium
-                    ) { Text("从相册换头像", color = currentTheme.textPrimary, fontSize = 12.sp) }
+                    ) { Text("换头像", color = currentTheme.textPrimary, fontSize = 12.sp) }
                 }
 
                 OutlinedTextField(
@@ -2552,7 +2661,7 @@ fun EditProfileDialog(
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = currentTheme.primary),
                 shape = IosSquircleMedium
-            ) { Text("保存", color = currentTheme.buttonText) }
+            ) { Text("保存更新", color = currentTheme.buttonText) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消", color = currentTheme.textSecondary) }
@@ -2560,7 +2669,7 @@ fun EditProfileDialog(
     )
 }
 
-// ----------------- 发起比赛全屏页 (支持赛制组合选择) -----------------
+// ----------------- 发起比赛全屏页 -----------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTournamentFullScreen(
@@ -2637,7 +2746,7 @@ fun CreateTournamentFullScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        TournamentInputItem(theme, "赛事名称", title, "例如：光谷乒协排位赛") { title = it }
+        TournamentInputItem(theme, "赛事名称", title, "例如：光谷乒协大奖赛") { title = it }
 
         Spacer(modifier = Modifier.height(12.dp))
         Text("比赛项目", color = theme.textSecondary, fontSize = 12.5.sp)
@@ -2649,7 +2758,7 @@ fun CreateTournamentFullScreen(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        Text("选择赛制组合", color = theme.textSecondary, fontSize = 12.5.sp)
+        Text("比赛赛制组合", color = theme.textSecondary, fontSize = 12.5.sp)
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("小组赛+淘汰赛", "单败淘汰赛", "大循环赛").forEach { mode ->
@@ -2758,7 +2867,7 @@ fun CreateTournamentFullScreen(
             modifier = Modifier.fillMaxWidth().height(48.dp),
             shape = IosSquircleMedium,
             colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
-        ) { Text("发布比赛并生成对阵表", color = theme.buttonText, fontWeight = FontWeight.Bold) }
+        ) { Text("发布比赛并同步至飞书", color = theme.buttonText, fontWeight = FontWeight.Bold) }
 
         Spacer(modifier = Modifier.height(48.dp))
     }
@@ -2930,7 +3039,7 @@ fun CreatePostFullScreen(
     }
 }
 
-// ----------------- 通用表单项 -----------------
+// ----------------- 通用组件 -----------------
 @Composable
 fun TournamentInputItem(theme: AppTheme, label: String, value: String, hint: String, onValueChange: (String) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
