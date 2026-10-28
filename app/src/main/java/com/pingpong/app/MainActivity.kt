@@ -146,7 +146,7 @@ fun SafeImage(uri: Uri?, modifier: Modifier = Modifier) {
     }
 }
 
-// ----------------- 数据模型 -----------------
+// ----------------- 数据模型规范 -----------------
 data class Comment(
     val id: Long = System.currentTimeMillis(),
     val author: String,
@@ -391,7 +391,7 @@ object FeishuCloud {
 
 // ----------------- 本地存储持久化 -----------------
 object AppStorage {
-    private const val PREF_NAME = "pingpong_db_v9"
+    private const val PREF_NAME = "pingpong_db_v10"
 
     fun saveLoginUser(context: Context, user: UserProfile?) {
         val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -583,7 +583,7 @@ object AppStorage {
     }
 }
 
-// ----------------- 专业赛制自动编排算法 -----------------
+// ----------------- 专业赛制自动排表算法 -----------------
 object TournamentScheduler {
     fun generateSchedule(tour: Tournament) {
         tour.matches.clear()
@@ -3045,8 +3045,7 @@ fun CreatePostFullScreen(
             }
             Switch(
                 checked = showMyScore,
-                onCheckedChange = { showMyScore = it },
-                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = theme.primary)
+                onCheckedChange = { showMyScore = it }
             )
         }
     }
@@ -3147,4 +3146,3 @@ fun FlowRowLayout(tags: List<String>, theme: AppTheme, onTagClick: (String) -> U
         }
     }
 }
-这个
